@@ -13,7 +13,7 @@ import {
   Button,
 } from "@mui/material";
 
-function HomePage() {
+function HomePage({ userRole }) {
   const [userName, setUserName] = useState("");
   const [totalConverted, setTotalConverted] = useState(0);
   const [totalUploaded, setTotalUploaded] = useState(0);

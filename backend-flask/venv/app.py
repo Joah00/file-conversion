@@ -1,7 +1,7 @@
 from sqlalchemy.ext.automap import automap_base
 from sqlalchemy.orm import joinedload
 from flask_sqlalchemy import SQLAlchemy
-from flask import Flask, jsonify, make_response, request, session
+from flask import Flask, jsonify, make_response, request
 from flask_cors import CORS
 import urllib.parse
 from sqlalchemy.orm import Session as DBSession
@@ -9,6 +9,20 @@ from flask_jwt_extended import JWTManager, create_access_token, jwt_required, ge
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy import func
 from datetime import datetime
+from PIL import Image
+import openai
+import os
+from werkzeug.utils import secure_filename
+from flask import send_file
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
+from io import BytesIO
+import fitz
+import spacy
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
+from docx import Document
+
 
 app = Flask(__name__)
 CORS(app, supports_credentials=True, origins=["http://localhost:3000"])
@@ -21,14 +35,15 @@ connection_string = urllib.parse.quote_plus(
 )
 app.config['SQLALCHEMY_DATABASE_URI'] = f'mssql+pyodbc:///?odbc_connect={connection_string}'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config['JWT_SECRET_KEY'] = 'your-secret-key'  # Change this to a real secret key
-app.config['JWT_ACCESS_TOKEN_EXPIRES'] = False  # Optional: Set this if you want token expiration
+app.config['JWT_SECRET_KEY'] = 'your-secret-key'  
+app.config['JWT_ACCESS_TOKEN_EXPIRES'] = False  
+openai.api_key = os.getenv("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")
 jwt = JWTManager(app)
 
 db = SQLAlchemy(app)
 Base = automap_base()
+nlp = spacy.load("en_core_web_sm")
 
-# Customizing automap to handle naming conflicts
 def name_for_scalar_relationship(base, local_cls, referred_cls, constraint):
     name = referred_cls.__name__.lower() + "_ref"
     return name
@@ -49,20 +64,35 @@ with app.app_context():
     DeliveryOrder = Base.classes.DeliveryOrder
     ConvertStatus = Base.classes.ConvertStatus
     GoodsReceivedOrder = Base.classes.GoodsReceivedOrder
+    Authority = Base.classes.Authority
+    GRTemplate = Base.classes.GRTemplate
     
 @app.route('/login', methods=['POST'])
 def login():
     auth = request.json
     session_db = DBSession(db.engine)
-    user = session_db.query(Account).filter_by(username=auth.get('username')).first()
-    session_db.close()
+    
+    try:
+        # Fetch the user and join with the Authority table to get the role description
+        user = session_db.query(Account, Authority).join(Authority, Account.authority == Authority.ID).filter(Account.username == auth.get('username')).first()
+        
+        # Close the session after fetching the user
+        session_db.close()
 
-    if user and user.password == auth.get('password'):
-        # Create a new token with the user's ID embedded
-        access_token = create_access_token(identity=user.ID)
-        return jsonify(access_token=access_token), 200
-    else:
-        return jsonify({"msg": "Bad username or password"}), 401
+        # Check if the user exists and the password matches
+        if user and user.Account.password == auth.get('password'):
+            # Get the authority description (role) from the joined Authority table
+            authority_desc = user.Authority.desc
+
+            # Create a new token with the user's ID embedded
+            access_token = create_access_token(identity=user.Account.ID)
+            return jsonify(access_token=access_token, role=authority_desc), 200
+        else:
+            return jsonify({"msg": "Bad username or password"}), 401
+    except Exception as e:
+        # Close the session in case of an exception
+        session_db.close()
+        return jsonify({"msg": f"An error occurred: {str(e)}"}), 500
     
     
 @app.route('/get_displayName', methods=['GET'])
@@ -125,7 +155,7 @@ def get_recent_conversions():
         DeliveryOrder.uploadBy == user_id
     ).order_by(
         DeliveryOrder.dateCreated.desc()  
-    ).limit(10).all()
+    ).limit(5).all()
 
     conversions = [
         {
@@ -145,6 +175,7 @@ def get_delivery_orders():
 
     try:
         orders = session.query(
+            DeliveryOrder.ID,
             DeliveryOrder.DOID,
             DeliveryOrder.documentName,
             DeliveryOrder.dateCreated,
@@ -157,6 +188,7 @@ def get_delivery_orders():
         ).all()
 
         results = [{
+            'ID': order.ID,
             'uploadBy': order.uploadBy,
             'doid': order.DOID,
             'documentName': order.documentName,
@@ -170,6 +202,37 @@ def get_delivery_orders():
         session.rollback()
         session.close()
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/get_delivery_order_file/<int:id>', methods=['GET'])
+@jwt_required()
+def get_delivery_order_file(id):
+    session = db.session()
+
+    try:
+        # Query the DeliveryOrder table by ID
+        delivery_order = session.query(DeliveryOrder).filter_by(ID=id).first()
+
+        # Ensure the record exists and has file data
+        if not delivery_order or not delivery_order.DOfile:
+            return jsonify({'error': 'File not found'}), 404
+
+        file_data = delivery_order.DOfile
+
+        # Set Content-Type and filename for PDF files
+        response = make_response(file_data)
+        response.headers.set('Content-Type', 'application/pdf')
+        response.headers.set('Content-Disposition', f'attachment; filename="{delivery_order.documentName}"')
+        
+        return response
+
+    except Exception as e:
+        session.rollback()
+        return jsonify({'error': f'Failed to retrieve file: {str(e)}'}), 500
+
+    finally:
+        session.close()
+
     
 @app.route('/get_goods_received_orders', methods=['GET'])
 @jwt_required()
@@ -181,7 +244,8 @@ def get_goods_received_orders():
             User.displayName.label('createdBy'),
             GoodsReceivedOrder.GRID,
             DeliveryOrder.DOID.label('doid'),
-            GoodsReceivedOrder.documentName,
+            GoodsReceivedOrder.documentName.label('grDocumentName'),  
+            DeliveryOrder.documentName.label('doDocumentName'), 
             GoodsReceivedOrder.dateConverted
         ).join(
             User, GoodsReceivedOrder.createdBy == User.ID
@@ -193,7 +257,8 @@ def get_goods_received_orders():
             'convertedBy': order.createdBy,
             'grid': order.GRID,
             'doid': order.doid,
-            'documentName': order.documentName,
+            'grDocumentName': order.grDocumentName,  
+            'doDocumentName': order.doDocumentName, 
             'convertedDate': order.dateConverted.strftime('%d-%m-%Y') if order.dateConverted else None
         } for order in orders]
 
@@ -215,18 +280,22 @@ def get_account_user_info():
             Account.username,
             User.employeeID,
             Account.ID,
-            Status.desc
+            Status.desc,
+            Authority.desc.label("role") 
         ).outerjoin(
             User, Account.ID == User.accountID
         ).join(
             Status, Status.ID == Account.status
+        ).join(
+            Authority, Authority.ID == Account.authority 
         ).all()
 
         data = [{
             'username': result.username,
             'employeeID': result.employeeID if result.employeeID else 'New User',
             'ID': result.ID,
-            'status': result.desc
+            'status': result.desc,
+            'role': result.role 
         } for result in results]
 
         session.close()
@@ -288,6 +357,10 @@ def update_account(id):
         # Update the account fields
         account.username = data.get('username', account.username)
         account.password = data.get('password', account.password)
+        # Update authority if provided
+        authority = data.get('authority')
+        if authority is not None:
+            account.authority = authority
 
         # Commit the changes
         session.commit()
@@ -298,6 +371,7 @@ def update_account(id):
         session.rollback()
         session.close()
         return jsonify({'error': str(e)}), 500
+
     
 
 @app.route('/change_account_status/<int:id>', methods=['PUT'])
@@ -734,25 +808,30 @@ def upload_delivery_order():
         # Get the user ID from the token
         user_id = get_jwt_identity()
 
-        # Check if file is uploaded
-        if 'file0' not in request.files:
-            return jsonify({'error': 'No file uploaded'}), 400
+        # Check if files are uploaded
+        if not request.files:
+            return jsonify({'error': 'No files uploaded'}), 400
 
-        files = request.files.getlist('file0')
-        for file in files:
-            # Read the file content as bytes
-            file_data = file.read()
+        # Retrieve DOID from form data, default to None if not provided
+        doid = request.form.get('DOID') or None
+
+        # Loop over the uploaded files and add each one to the database
+        for key in request.files:
+            file = request.files[key]
+            file_data = file.read()  # Read the file content as bytes
+            
             # Insert into the DeliveryOrder table
             delivery_order = DeliveryOrder(
                 uploadBy=user_id,
-                convertStatusId=1, 
-                DOID="test",
+                convertStatusId=1,
+                DOID=doid,  # Set DOID to None if not provided
                 DOfile=file_data,
                 documentName=file.filename,
                 dateCreated=datetime.utcnow()
             )
             session.add(delivery_order)
 
+        # Commit the transaction
         session.commit()
         return jsonify({'message': 'Files uploaded successfully!'}), 200
 
@@ -762,6 +841,196 @@ def upload_delivery_order():
 
     finally:
         session.close()
+
+
+def extract_text_from_pdf(file):
+    text = ""
+    with fitz.open(stream=file.read(), filetype="pdf") as pdf:
+        for page_num in range(pdf.page_count):
+            page = pdf[page_num]
+            text += page.get_text("text")
+    return text
+
+
+@app.route('/process_pdf', methods=['POST'])
+def process_pdf():
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file provided'}), 400
+
+    file = request.files['file']
+    if file and file.filename.endswith('.pdf'):
+        # Step 1: Extract text from PDF
+        extracted_text = extract_text_from_pdf(file)
+
+        # Step 2: Use spaCy for NLP processing on the extracted text
+        doc = nlp(extracted_text)
+        
+        # Extract entities and organize them as structured data
+        structured_data = {}
+        for ent in doc.ents:
+            structured_data[ent.label_] = structured_data.get(ent.label_, []) + [ent.text]
+        
+        return jsonify({
+            'message': 'Text extracted and processed with NLP successfully!',
+            'structured_data': structured_data
+        }), 200
+
+    else:
+        return jsonify({'error': 'Invalid file type. Only PDF files are allowed.'}), 400
+    
+
+@app.route('/map_to_template', methods=['POST'])
+@jwt_required()
+def map_to_template():
+    try:
+        # Get template ID and structured data from the request
+        data = request.get_json()
+        template_id = data.get('template_id')
+        structured_data = data.get('structured_data')
+        
+        if not template_id or not structured_data:
+            return jsonify({'error': 'Template ID and structured data are required'}), 400
+
+        # Fetch template from the database
+        template = db.session.query(GRTemplate).filter_by(ID=template_id).first()
+        if not template or not template.templateFile:
+            return jsonify({'error': 'Template not found or file missing'}), 404
+
+        # Load the DOCX template from the binary data
+        docx_file = BytesIO(template.templateFile)
+        document = Document(docx_file)
+
+        # Insert structured data into the document
+        for key, values in structured_data.items():
+            for value in values:
+                document.add_paragraph(f"{key}: {value}")
+
+        # Save modified document as a new DOCX file
+        document_filename = f"generated_template_{template_id}.docx"
+        document.save(document_filename)
+
+        return jsonify({'message': 'Document generated successfully!', 'document_filename': document_filename}), 200
+
+    except Exception as e:
+        return jsonify({'error': f'Failed to map and generate template: {str(e)}'}), 500
+    
+
+@app.route('/generate_pdf', methods=['POST'])
+@jwt_required()
+def generate_pdf():
+    try:
+        # Get mapped data from the request
+        data = request.get_json()
+        mapped_data = data.get("mappedData")
+        
+        if not mapped_data:
+            return jsonify({'error': 'No mapped data provided'}), 400
+
+        # Set up a BytesIO buffer for the PDF
+        pdf_buffer = BytesIO()
+
+        # Create the PDF canvas
+        pdf_canvas = canvas.Canvas(pdf_buffer, pagesize=letter)
+        pdf_canvas.setTitle("Generated Document")
+
+        # Start writing content to the PDF
+        pdf_canvas.setFont("Helvetica", 12)
+        pdf_canvas.drawString(72, 750, "Generated Document")
+        
+        y_position = 720  # Initial position
+
+        for field, values in mapped_data.items():
+            for value in values:
+                pdf_canvas.drawString(72, y_position, f"{field}: {value}")
+                y_position -= 20  # Move down for each entry
+
+                # Check if the page needs to be continued
+                if y_position < 72:  # Avoid going too low on the page
+                    pdf_canvas.showPage()
+                    pdf_canvas.setFont("Helvetica", 12)
+                    y_position = 750  # Reset position on new page
+
+        # Save and close the PDF canvas
+        pdf_canvas.save()
+        pdf_buffer.seek(0)
+
+        # Define a filename for the PDF
+        pdf_filename = "generated_document.pdf"
+
+        # Send the PDF as a response
+        return send_file(
+            pdf_buffer,
+            as_attachment=True,
+            download_name=pdf_filename,
+            mimetype='application/pdf'
+        )
+
+    except Exception as e:
+        print(f"Error generating PDF: {str(e)}")
+        return jsonify({'error': f'Failed to generate PDF: {str(e)}'}), 500
+
+
+@app.route('/upload_gr_template', methods=['POST'])
+@jwt_required()
+def upload_gr_template():
+    try:
+        # Retrieve the user ID from the JWT token
+        user_id = get_jwt_identity()
+        
+        # Check if the file is part of the request
+        if 'file' not in request.files:
+            return jsonify({'error': 'No file provided'}), 400
+
+        file = request.files['file']
+        description = request.form.get('description', '')
+        
+        # Validate the file and description
+        if file.filename == '':
+            return jsonify({'error': 'No selected file'}), 400
+        if not description:
+            return jsonify({'error': 'Description is required'}), 400
+        
+        # Secure the file name and read file data as binary
+        filename = secure_filename(file.filename)
+        file_data = file.read()  # Read file content as binary
+        
+        # Insert into GRTemplate table
+        new_template = GRTemplate(
+            templateFile=file_data,
+            fileName=filename,
+            desc=description
+        )
+        
+        # Add and commit to database
+        db.session.add(new_template)
+        db.session.commit()
+
+        return jsonify({'message': 'Template uploaded successfully!'}), 200
+
+    except IntegrityError:
+        db.session.rollback()
+        return jsonify({'error': 'Database integrity error occurred'}), 500
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': f'Failed to upload template: {str(e)}'}), 500
+    
+
+@app.route('/get_gr_templates_desc', methods=['GET'])
+@jwt_required()  # Assuming JWT authentication is required
+def get_gr_templates():
+    try:
+        # Query the GRTemplate table to get only the ID and description columns
+        templates = db.session.query(GRTemplate.ID, GRTemplate.desc).all()
+        
+        # Convert the query result to a list of dictionaries
+        result = [{"ID": template.ID, "description": template.desc} for template in templates]
+        
+        return jsonify(result), 200
+    except Exception as e:
+        print("Error fetching templates:", e)
+        return jsonify({"error": "Failed to fetch templates"}), 500
+    
+
 
 
 

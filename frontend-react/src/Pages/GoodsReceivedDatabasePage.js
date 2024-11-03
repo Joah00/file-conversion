@@ -16,8 +16,9 @@ function GoodsReceivedDatabasePage() {
   const columns = [
     { id: "convertedBy", label: "Converted By", minWidth: 170 },
     { id: "grid", label: "GR ID", minWidth: 80 },
+    { id: "grDocumentName", label: "GR Document Name", minWidth: 170 },
     { id: "doid", label: "DO ID", minWidth: 80 },
-    { id: "documentName", label: "Document Name", minWidth: 170 },
+    { id: "doDocumentName", label: "DO Document Name", minWidth: 170 },
     { id: "convertedDate", label: "Converted Date", minWidth: 170 },
   ];
 
@@ -26,6 +27,7 @@ function GoodsReceivedDatabasePage() {
   const [GRData, setGRData] = useState([]);
   const [originalData, setOriginalData] = useState([]);
   const [filterText, setFilterText] = useState("");
+  const [filterGRText, setFilterGRText] = useState("");
   const [filterDate, setFilterDate] = useState("");
   const [filterDOID, setFilterDOID] = useState("");
   const [filterGRID, setFilterGRID] = useState("");
@@ -42,30 +44,37 @@ function GoodsReceivedDatabasePage() {
   const handleFilterChange = (e) => {
     const newText = e.target.value;
     setFilterText(newText);
-    updateFilteredData(newText, filterDate, filterDOID, filterGRID);
+    updateFilteredData(newText, filterGRText, filterDate, filterDOID, filterGRID);
+  };
+
+  const handleGRFilterChange = (e) => {
+    const newGRText = e.target.value;
+    setFilterGRText(newGRText);
+    updateFilteredData(filterText, newGRText, filterDate, filterDOID, filterGRID);
   };
 
   const handleDateChange = (e) => {
     const newDate = e.target.value; 
     setFilterDate(newDate); 
-    updateFilteredData(filterText, newDate, filterDOID, filterGRID);
+    updateFilteredData(filterText, filterGRText, newDate, filterDOID, filterGRID);
   };
   
   const handleDOIDChange = (e) => {
     const newDOID = e.target.value;
     setFilterDOID(newDOID);
-    updateFilteredData(filterText, filterDate, newDOID, filterGRID);
+    updateFilteredData(filterText, filterGRText, filterDate, newDOID, filterGRID);
   };
 
   const handleGRIDChange = (e) => {
     const newGRID = e.target.value;
     setFilterGRID(newGRID);
-    updateFilteredData(filterText, filterDate, filterDOID, newGRID);
+    updateFilteredData(filterText, filterGRText, filterDate, filterDOID, newGRID);
   };
 
-  const updateFilteredData = (text, date, doid, grid) => {
+  const updateFilteredData = (text, grText, date, doid, grid) => {
     const filteredData = originalData.filter(item => {
-      const documentName = item.documentName ? item.documentName.toLowerCase() : "";
+      const documentName = item.doDocumentName ? item.doDocumentName.toLowerCase() : "";
+      const grDocumentName = item.grDocumentName ? item.grDocumentName.toLowerCase() : "";
       const itemDOID = item.doid ? item.doid.toString().toLowerCase() : "";
       const itemGRID = item.grid ? item.grid.toString().toLowerCase() : "";
       
@@ -74,10 +83,11 @@ function GoodsReceivedDatabasePage() {
       : true;
     
       const matchesDocumentName = documentName.includes(text.toLowerCase());
+      const matchesGRDocumentName = grDocumentName.includes(grText.toLowerCase());
       const matchesDOID = itemDOID.includes(doid.toLowerCase());
       const matchesGRID = itemGRID.includes(grid.toLowerCase());
   
-      return matchesDocumentName && matchesDate && matchesDOID && matchesGRID;
+      return matchesDocumentName && matchesGRDocumentName && matchesDate && matchesDOID && matchesGRID;
     });
   
     setGRData(filteredData);
@@ -85,7 +95,6 @@ function GoodsReceivedDatabasePage() {
   };
   
   
-
   useEffect(() => {
     const fetchGRData = async () => {
       try {
@@ -118,7 +127,7 @@ function GoodsReceivedDatabasePage() {
         <div className="filter-container">
           <div className="filter-row">
             <TextField
-              label="Filter by Document Name"
+              label="Filter by DO Document Name"
               variant="filled"
               value={filterText}
               onChange={handleFilterChange}
@@ -132,10 +141,10 @@ function GoodsReceivedDatabasePage() {
               }}
             />
             <TextField
-              label="Filter by Date DD-MM-YYYY"
+              label="Filter by GR Document Name"
               variant="filled"
-              value={filterDate}
-              onChange={handleDateChange}
+              value={filterGRText}
+              onChange={handleGRFilterChange}
               sx={{
                 width: "48%",
                 marginLeft: "4%",
@@ -170,6 +179,22 @@ function GoodsReceivedDatabasePage() {
               sx={{
                 width: "48%",
                 marginLeft: "4%",
+                "& .MuiInputBase-input": { color: "white" },
+                "& .MuiInputLabel-root": { color: "#b5b5b5" },
+                "& .MuiFilledInput-underline:after": {
+                  borderBottomColor: "#1ab394",
+                },
+              }}
+            />
+          </div>
+          <div className="filter-row">
+            <TextField
+              label="Filter by Date DD-MM-YYYY"
+              variant="filled"
+              value={filterDate}
+              onChange={handleDateChange}
+              sx={{
+                width: "98%", // Span across two columns
                 "& .MuiInputBase-input": { color: "white" },
                 "& .MuiInputLabel-root": { color: "#b5b5b5" },
                 "& .MuiFilledInput-underline:after": {

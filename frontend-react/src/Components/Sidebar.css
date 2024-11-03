@@ -13,6 +13,7 @@ body {
   display: flex;
   flex-direction: column;
   justify-content: space-between; 
+  z-index: 100;
 }
 
 .SidebarList {
@@ -29,10 +30,11 @@ body {
   align-items: center;
   color: white;
   font-family: 'Trebuchet MS', 'Lucida Sans Unicode', 'Lucida Grande', 'Lucida Sans', Arial, sans-serif;
+  transition: background-color 0.3s;
 }
 
 .SidebarList .row.logout {
-  margin-top: 20%; 
+  margin-top: 10%; 
 }
 
 .SidebarList .row:hover {

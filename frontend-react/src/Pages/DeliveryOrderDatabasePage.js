@@ -10,10 +10,10 @@ import TableHead from "@mui/material/TableHead";
 import TableRow from "@mui/material/TableRow";
 import TablePagination from "@mui/material/TablePagination";
 import { TextField } from "@mui/material";
-import dayjs from 'dayjs';
-import 'dayjs/locale/en-gb';
+import dayjs from "dayjs";
+import "dayjs/locale/en-gb";
 
-dayjs.locale('en-gb');
+dayjs.locale("en-gb");
 
 function DeliveryOrderDatabasePage() {
   const columns = [
@@ -29,8 +29,11 @@ function DeliveryOrderDatabasePage() {
   const [filterDOID, setFilterDOID] = useState("");
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(10);
-  const [originalData, setOriginalData] = useState([]); 
-  const [displayData, setDisplayData] = useState([]); 
+  const [originalData, setOriginalData] = useState([]);
+  const [displayData, setDisplayData] = useState([]);
+  const [selectedID, setSelectedID] = useState(null);
+  const [fileURL, setFileURL] = useState(null);
+  const [fileName, setFileName] = useState("");
 
   const handleChangePage = (event, newPage) => {
     setPage(newPage);
@@ -60,41 +63,79 @@ function DeliveryOrderDatabasePage() {
   };
 
   const updateFilteredData = (text, date, doid) => {
-    const filteredData = originalData.filter(item => {
-      const matchesDocumentName = item.documentName.toLowerCase().includes(text.toLowerCase());
-      
-      const matchesDate = date 
-      ? item.uploadDate === date 
-      : true;
+    const filteredData = originalData.filter((item) => {
+      const matchesDocumentName = item.documentName
+        .toLowerCase()
+        .includes(text.toLowerCase());
+
+      const matchesDate = date ? item.uploadDate === date : true;
       const matchesDOID = item.doid.toLowerCase().includes(doid.toLowerCase());
-  
+
       return matchesDocumentName && matchesDate && matchesDOID;
     });
-  
+
     setDisplayData(filteredData);
+  };
+
+  const handleRowClick = async (row) => {
+    setSelectedID(row.ID);
+    setFileName(row.documentName);
+  
+    try {
+      const fileURL = await fetchFile(row.ID); // Fetch and get the URL
+      if (fileURL) {
+        window.open(fileURL, "_blank"); // Open the PDF in a new tab
+      }
+    } catch (error) {
+      console.error("Error opening file:", error);
+    }
   };
 
   useEffect(() => {
     const fetchDOData = async () => {
       try {
-        const response = await fetch('http://127.0.0.1:5000/get_delivery_orders', {
-          headers: {
-            Authorization: 'Bearer ' + localStorage.getItem('access_token'),
-            'Content-Type': 'application/json'
+        const response = await fetch(
+          "http://127.0.0.1:5000/get_delivery_orders",
+          {
+            headers: {
+              Authorization: "Bearer " + localStorage.getItem("access_token"),
+              "Content-Type": "application/json",
+            },
           }
-        });
-        if (!response.ok) throw new Error('Failed to fetch');
+        );
+        if (!response.ok) throw new Error("Failed to fetch");
         const data = await response.json();
         setOriginalData(data);
-        setDisplayData(data);  
+        setDisplayData(data);
       } catch (error) {
-        console.error('Error fetching data:', error);
+        console.error("Error fetching data:", error);
         setOriginalData([]);
         setDisplayData([]);
       }
     };
     fetchDOData();
   }, []);
+
+  const fetchFile = async (id) => {
+    try {
+      const response = await fetch(
+        `http://127.0.0.1:5000/get_delivery_order_file/${id}`,
+        {
+          headers: {
+            Authorization: "Bearer " + localStorage.getItem("access_token"),
+          },
+        }
+      );
+
+      if (!response.ok) throw new Error("Failed to fetch file");
+
+      const blob = await response.blob();
+      return URL.createObjectURL(blob);
+    } catch (error) {
+      console.error("Error fetching file:", error);
+      alert("Failed to fetch the file.");
+    }
+  };
 
   return (
     <MainLayout>
@@ -189,35 +230,39 @@ function DeliveryOrderDatabasePage() {
                 </TableRow>
               </TableHead>
               <TableBody>
-                {displayData.slice(
-                  page * rowsPerPage,
-                  page * rowsPerPage + rowsPerPage
-                ).map((row, index) => (
-                  <TableRow
-                    hover
-                    role="checkbox"
-                    tabIndex={-1}
-                    key={index}
-                    sx={{ "&:hover": { backgroundColor: "#1ab394" } }}
-                  >
-                    {columns.map((column) => {
-                      const value = row[column.id];
-                      return (
-                        <TableCell
-                          key={column.id}
-                          align="center"
-                          sx={{
-                            background: "#293846",
-                            color: getColor(column.id, value),
-                            borderColor: "#4c5b5b",
-                          }}
-                        >
-                          {value}
-                        </TableCell>
-                      );
-                    })}
-                  </TableRow>
-                ))}
+                {displayData
+                  .slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage)
+                  .map((row, index) => (
+                    <TableRow
+                      hover
+                      role="checkbox"
+                      tabIndex={-1}
+                      key={index}
+                      onClick={() => handleRowClick(row)}
+                      sx={{
+                        "&:hover": { backgroundColor: "#1ab394" },
+                        backgroundColor:
+                          row.ID === selectedID ? "#1ab394" : "inherit",
+                      }}
+                    >
+                      {columns.map((column) => {
+                        const value = row[column.id];
+                        return (
+                          <TableCell
+                            key={column.id}
+                            align="center"
+                            sx={{
+                              background: "#293846",
+                              color: "white",
+                              borderColor: "#4c5b5b",
+                            }}
+                          >
+                            {value}
+                          </TableCell>
+                        );
+                      })}
+                    </TableRow>
+                  ))}
               </TableBody>
             </Table>
           </TableContainer>
@@ -235,22 +280,6 @@ function DeliveryOrderDatabasePage() {
       </div>
     </MainLayout>
   );
-}
-
-function getColor(columnId, value) {
-  if (columnId === "status") {
-    switch (value.toLowerCase()) {
-      case "converted":
-        return "#1ab394";
-      case "new":
-        return "#f0ad4e";
-      case "failed":
-        return "#d9534f";
-      default:
-        return "white";
-    }
-  }
-  return "white";
 }
 
 export default DeliveryOrderDatabasePage;

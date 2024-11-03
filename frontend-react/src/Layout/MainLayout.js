@@ -1,15 +1,14 @@
 import React from 'react';
 import SideBar from '../Components/Sidebar';
-import './MainLayout.css'; // Assuming you add this new CSS file for layout
+import './MainLayout.css'; 
 
-function MainLayout({ children }) {
+function MainLayout({ children, handleLogout, userRole }) {
   return (
     <div className="main-layout">
       <header className="header">
         <h1>NeuroFormatter</h1>
       </header>
-      
-      <SideBar />
+      {userRole && <SideBar handleLogout={handleLogout} userRole={userRole} />}
       <div className="content-area">
         {children}
       </div>

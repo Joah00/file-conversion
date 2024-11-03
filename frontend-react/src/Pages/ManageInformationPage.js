@@ -59,32 +59,32 @@ function ManageInformationPage() {
       console.error("Error fetching employee information:", error);
     }
   };
-  
-  // Call fetchEmployees inside the useEffect to load the initial data
+
   useEffect(() => {
     fetchEmployees();
   }, []);
 
+  const fetchNewEmployees = async () => {
+    try {
+      const response = await fetch(
+        "http://127.0.0.1:5000/get_new_employee_username",
+        {
+          method: "GET",
+          headers: {
+            Authorization: "Bearer " + localStorage.getItem("access_token"),
+            "Content-Type": "application/json",
+          },
+        }
+      );
+      if (!response.ok) throw new Error("Failed to fetch new employees");
+      const data = await response.json();
+      setNewEmployees(data);
+    } catch (error) {
+      console.error("Error fetching new employees:", error);
+    }
+  };
+
   useEffect(() => {
-    const fetchNewEmployees = async () => {
-      try {
-        const response = await fetch(
-          "http://127.0.0.1:5000/get_new_employee_username",
-          {
-            method: "GET",
-            headers: {
-              Authorization: "Bearer " + localStorage.getItem("access_token"),
-              "Content-Type": "application/json",
-            },
-          }
-        );
-        if (!response.ok) throw new Error("Failed to fetch new employees");
-        const data = await response.json();
-        setNewEmployees(data);
-      } catch (error) {
-        console.error("Error fetching new employees:", error);
-      }
-    };
     fetchNewEmployees();
   }, []);
 
@@ -93,14 +93,14 @@ function ManageInformationPage() {
       setSelectedEmployee({
         username: employee.username,
         id: employee.ID,
-        accountID: employee.ID, 
-        displayName: employee.username, 
+        accountID: employee.ID,
+        displayName: employee.username,
       });
     } else if (employee.Id) {
       setSelectedEmployee({
         ...employee,
         id: employee.Id,
-        accountID: employee.accountID, 
+        accountID: employee.accountID,
         displayName: employee.name,
       });
     }
@@ -126,25 +126,34 @@ function ManageInformationPage() {
 
   const handleSubmit = (e) => {
     e.preventDefault();
-  
-    // Check if all required fields are filled, including accountID
-    const requiredFields = ["employeeID", "name", "email", "phoneNumber", "icNumber", "gender", "accountID"];
-    const missingFields = requiredFields.filter((field) => !selectedEmployee[field]);
-  
+
+    const requiredFields = [
+      "employeeID",
+      "name",
+      "email",
+      "phoneNumber",
+      "icNumber",
+      "gender",
+      "accountID",
+    ];
+    const missingFields = requiredFields.filter(
+      (field) => !selectedEmployee[field]
+    );
+
     if (missingFields.length > 0) {
       alert(`Please fill in all required fields: ${missingFields.join(", ")}`);
       return;
     }
-  
+
     // Prepare data for submission
     const submissionData = {
       ...selectedEmployee,
       name: selectedEmployee.name.toUpperCase(),
       employeeID: selectedEmployee.employeeID.toUpperCase(),
       email: selectedEmployee.email.toLowerCase(),
-      displayName: selectedEmployee.name.toUpperCase(), // Use the formatted name for displayName
+      displayName: selectedEmployee.name.toUpperCase(),
     };
-  
+
     // Submit data to the backend
     fetch("http://127.0.0.1:5000/create_user", {
       method: "POST",
@@ -156,7 +165,6 @@ function ManageInformationPage() {
     })
       .then((response) => {
         if (!response.ok) {
-          // Try to parse the error message from the response
           return response.json().then((errorData) => {
             throw new Error(errorData.error || "Failed to create user");
           });
@@ -166,7 +174,8 @@ function ManageInformationPage() {
       .then((data) => {
         alert("User created successfully!");
         handleClear();
-        fetchEmployees(); 
+        fetchEmployees();
+        fetchNewEmployees();
       })
       .catch((error) => {
         console.error("Error creating user:", error);
@@ -176,17 +185,24 @@ function ManageInformationPage() {
 
   const handleUpdate = (e) => {
     e.preventDefault();
-  
-    // Check if all required fields are filled
-    const requiredFields = ["employeeID", "name", "email", "phoneNumber", "icNumber", "gender"];
-    const missingFields = requiredFields.filter((field) => !selectedEmployee[field]);
-  
+
+    const requiredFields = [
+      "employeeID",
+      "name",
+      "email",
+      "phoneNumber",
+      "icNumber",
+      "gender",
+    ];
+    const missingFields = requiredFields.filter(
+      (field) => !selectedEmployee[field]
+    );
+
     if (missingFields.length > 0) {
       alert(`Please fill in all required fields: ${missingFields.join(", ")}`);
       return;
     }
-  
-    // Prepare data for submission
+
     const submissionData = {
       employeeID: selectedEmployee.employeeID.toUpperCase(),
       name: selectedEmployee.name.toUpperCase(),
@@ -195,7 +211,7 @@ function ManageInformationPage() {
       icNumber: selectedEmployee.icNumber,
       gender: selectedEmployee.gender,
     };
-  
+
     // Submit data to the backend
     fetch(`http://127.0.0.1:5000/update_user/${selectedEmployee.id}`, {
       method: "PUT",
@@ -217,7 +233,7 @@ function ManageInformationPage() {
       .then((data) => {
         alert("User updated successfully!");
         handleClear();
-        fetchEmployees(); 
+        fetchEmployees();
       })
       .catch((error) => {
         console.error("Error updating user:", error);

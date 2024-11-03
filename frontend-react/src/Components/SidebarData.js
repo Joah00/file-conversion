@@ -8,6 +8,7 @@ import ManageAccountsIcon from '@mui/icons-material/ManageAccounts';
 import PermIdentityIcon from '@mui/icons-material/PermIdentity';
 import LocalShippingIcon from '@mui/icons-material/LocalShipping';
 import DescriptionIcon from '@mui/icons-material/Description';
+import AutoStoriesIcon from '@mui/icons-material/AutoStories';
 
 export const SidebarData = [
     {
@@ -39,6 +40,11 @@ export const SidebarData = [
         title: "My Profile/Account",
         icon: <AccountBoxIcon />,
         link: "/myProfilePage"
+    },
+    {
+        title: "Manage Template",
+        icon: <AutoStoriesIcon />,
+        link: "/manageTemplate"
     },
     {
         title: "Manage Account",

@@ -1,0 +1,42 @@
+[
+    {
+        "text": "UNIT     53.66",
+        "entities": [[9, 14, "UNIT_PRICE"]]
+    },
+    {
+        "text": "UNIT     34.23   ",
+        "entities": [[9, 14, "UNIT_PRICE"]]
+    },
+    {
+        "text": "UNIT     123.87           ",
+        "entities": [[9, 15, "UNIT_PRICE"]]
+    },
+    {
+        "text": "UNIT     4345.53",
+        "entities": [[9, 16, "UNIT_PRICE"]]
+    },
+    {
+        "text": "UNIT     12.90",
+        "entities": [[9, 14, "UNIT_PRICE"]]
+    },
+    {
+        "text": "UNIT     12.90",
+        "entities": [[9, 14, "UNIT_PRICE"]]
+    },
+    {
+        "text": "     UNIT     12.90",
+        "entities": [[14, 19, "UNIT_PRICE"]]
+    },
+    {
+        "text": "       UNIT     12.90",
+        "entities": [[16, 21, "UNIT_PRICE"]]
+    },
+    {
+        "text": "     UNIT     12.90 dfg sadf sdffdfa",
+        "entities": [[14, 19, "UNIT_PRICE"]]
+    },
+    {
+        "text": "     UNIT     12.90.",
+        "entities": [[14, 19, "UNIT_PRICE"]]
+    }
+]

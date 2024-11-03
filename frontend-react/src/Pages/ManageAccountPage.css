@@ -63,6 +63,10 @@
   margin-bottom: 0px;
 }
 
-.auto-generate-checkbox {
-  margin-top: 0px; 
+.second-row {
+  display: flex;
+  width: 100%;
+  justify-content: space-between; 
+  margin-bottom: 0px;
+  margin-top: 0px;
 }

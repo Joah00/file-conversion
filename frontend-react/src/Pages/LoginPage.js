@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import './LoginPage.css';
 import { TextField, Button, CssBaseline, ThemeProvider, createTheme } from '@mui/material';
 
-function LoginPage() {
+function LoginPage({ setUserRole }) { 
   const navigate = useNavigate();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -45,6 +45,7 @@ function LoginPage() {
     },
   });
 
+
   const handleLogin = async (e) => {
     e.preventDefault();
     try {
@@ -53,23 +54,28 @@ function LoginPage() {
         headers: {
           'Content-Type': 'application/json',
         },
+        credentials: 'include',
         body: JSON.stringify({ username: email, password: password }),
       });
-      const data = await response.json();
-      if (response.ok) {
-        localStorage.setItem('access_token', data.access_token); 
-        navigate('/homePage');
-      } else {
-        alert(data.error);  
+  
+      if (!response.ok) {
+        const errorData = await response.json();
+        alert(errorData.msg || 'Login failed');
+        return;
       }
+  
+      const data = await response.json();
+      localStorage.setItem('access_token', data.access_token);
+      setUserRole(data.role);
+      navigate('/homePage');
     } catch (error) {
-      alert('Network error');
+      console.error('Login error:', error); 
+      alert('Network error. Check the server or CORS settings.');
     }
   };
-
   return (
     <ThemeProvider theme={theme}>
-      <CssBaseline /> 
+      <CssBaseline />
       <div className="login-container">
         <div className="Logo">
           <h2>NeuroFormatter</h2>
@@ -101,7 +107,6 @@ function LoginPage() {
               type="submit"
               fullWidth
               variant="contained"
-              color="primary"
               style={{ marginTop: '30px' }}
             >
               Login
