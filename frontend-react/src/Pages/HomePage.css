@@ -57,69 +57,10 @@
   color: white;
 }
 
-.recent-uploads {
-  max-height: 200px; 
-  overflow-y: auto; 
-  background-color: #2c3e50; 
-  border-radius: 8px;
-  margin-bottom: 20px;
-}
-
-.uploads-table {
-  width: 100%;
-  border-collapse: collapse;
-}
-
-.uploads-table th, .uploads-table td {
-  padding: 12px;
-  text-align: left;
-  border-bottom: 1px solid #4c5b6e;
-}
-
-.uploads-table th {
-  background-color: #1e3547;
-  color: white;
-  position: sticky;
-  top: 0;
-  z-index: 10;
-}
-
-.uploads-table td {
-  background-color: #293846;
-  color: #b5b5b5;
-}
-
-.uploads-table .converted {
-  color: #1ab394;
-}
-
-.uploads-table .new {
-  color: #f0ad4e;
-}
-
-.uploads-table .failed {
-  color: #d9534f;
-}
 
 .clickable-row:hover {
   background-color: #1ab394;
   cursor: pointer;
 }
 
-.upload-btn {
-  padding: 10px 20px;
-  background-color: #1ab394;
-  color: white;
-  border: none;
-  border-radius: 4px;
-  font-size: 16px;
-  cursor: pointer;
-}
 
-.upload-btn:hover {
-  background-color: #18a383;
-}
-
-.upload-btn:focus {
-  outline: none;
-}

@@ -12,6 +12,7 @@ import {
   TableRow,
   Button,
 } from "@mui/material";
+import DOGRTableComponent from "../Components/DOGRTableComponent";
 
 function HomePage({ userRole }) {
   const [userName, setUserName] = useState("");
@@ -107,100 +108,18 @@ function HomePage({ userRole }) {
 
         {/* Recent Uploads/Conversions */}
         <h2>Recent Conversions</h2>
-
-        <Paper
-          sx={{
-            maxWidth: "100%",
-            overflow: "auto",
-            background: "#293846",
-            borderRadius: "8px",
-          }}
-        >
-          <TableContainer>
-            <Table stickyHeader aria-label="sticky table">
-              <TableHead>
-                <TableRow>
-                  <TableCell
-                    sx={{
-                      background: "#1e3547",
-                      color: "white",
-                      borderColor: "white",
-                    }}
-                  >
-                    Document Name
-                  </TableCell>
-                  <TableCell
-                    sx={{
-                      background: "#1e3547",
-                      color: "white",
-                      borderColor: "white",
-                    }}
-                  >
-                    Conversion Date
-                  </TableCell>
-                  <TableCell
-                    sx={{
-                      background: "#1e3547",
-                      color: "white",
-                      borderColor: "white",
-                    }}
-                  >
-                    Status
-                  </TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {filteredFiles.map((file, index) => (
-                  <TableRow
-                    key={index}
-                    sx={{
-                      "&:hover": {
-                        backgroundColor: "#1ab394",
-                        cursor: "pointer",
-                      },
-                    }}
-                    onClick={handleRowClick}
-                  >
-                    <TableCell
-                      component="th"
-                      scope="row"
-                      sx={{
-                        color: "white",
-                        background: "#293846",
-                        borderColor: "#4c5b5b",
-                      }}
-                    >
-                      {file.documentName}
-                    </TableCell>
-                    <TableCell
-                      sx={{
-                        color: "white",
-                        background: "#293846",
-                        borderColor: "#4c5b5b",
-                      }}
-                    >
-                      {file.conversionDate}
-                    </TableCell>
-                    <TableCell
-                      sx={{
-                        color:
-                          file.status === "Converted"
-                            ? "#1ab394"
-                            : file.status === "New"
-                            ? "#f0ad4e"
-                            : "#d9534f",
-                        background: "#293846",
-                        borderColor: "#4c5b5b",
-                      }}
-                    >
-                      {file.status}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </TableContainer>
-        </Paper>
+        
+          <DOGRTableComponent
+            columns={[
+              { id: "documentName", label: "Document Name" },
+              { id: "conversionDate", label: "Conversion Date" },
+              { id: "status", label: "Status" },
+            ]}
+            data={filteredFiles}
+            onRowClick={() => navigate("/historyPage")}
+            maxHeight="300px"
+          />
+        
       </div>
     </MainLayout>
   );

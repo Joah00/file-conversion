@@ -1,17 +1,10 @@
 import React, { useState, useEffect } from "react";
 import MainLayout from "../Layout/MainLayout";
 import "./DeliveryOrderDatabasePage.css";
-import Paper from "@mui/material/Paper";
-import Table from "@mui/material/Table";
-import TableBody from "@mui/material/TableBody";
-import TableCell from "@mui/material/TableCell";
-import TableContainer from "@mui/material/TableContainer";
-import TableHead from "@mui/material/TableHead";
-import TableRow from "@mui/material/TableRow";
-import TablePagination from "@mui/material/TablePagination";
 import { TextField } from "@mui/material";
 import dayjs from "dayjs";
 import "dayjs/locale/en-gb";
+import DOGRTableComponent from "../Components/DOGRTableComponent"; 
 
 dayjs.locale("en-gb");
 
@@ -27,22 +20,10 @@ function DeliveryOrderDatabasePage() {
   const [filterText, setFilterText] = useState("");
   const [filterDate, setFilterDate] = useState("");
   const [filterDOID, setFilterDOID] = useState("");
-  const [page, setPage] = useState(0);
-  const [rowsPerPage, setRowsPerPage] = useState(10);
   const [originalData, setOriginalData] = useState([]);
   const [displayData, setDisplayData] = useState([]);
   const [selectedID, setSelectedID] = useState(null);
-  const [fileURL, setFileURL] = useState(null);
   const [fileName, setFileName] = useState("");
-
-  const handleChangePage = (event, newPage) => {
-    setPage(newPage);
-  };
-
-  const handleChangeRowsPerPage = (event) => {
-    setRowsPerPage(+event.target.value);
-    setPage(0);
-  };
 
   const handleFilterChange = (e) => {
     const newValue = e.target.value;
@@ -82,9 +63,9 @@ function DeliveryOrderDatabasePage() {
     setFileName(row.documentName);
   
     try {
-      const fileURL = await fetchFile(row.ID); // Fetch and get the URL
+      const fileURL = await fetchFile(row.ID);
       if (fileURL) {
-        window.open(fileURL, "_blank"); // Open the PDF in a new tab
+        window.open(fileURL, "_blank"); 
       }
     } catch (error) {
       console.error("Error opening file:", error);
@@ -202,81 +183,14 @@ function DeliveryOrderDatabasePage() {
             }}
           />
         </div>
-        <Paper
-          sx={{
-            width: "100%",
-            overflow: "hidden",
-            background: "#293846",
-            color: "white",
-          }}
-        >
-          <TableContainer sx={{ maxHeight: 440 }}>
-            <Table stickyHeader aria-label="sticky table">
-              <TableHead>
-                <TableRow>
-                  {columns.map((column) => (
-                    <TableCell
-                      key={column.id}
-                      align="center"
-                      style={{
-                        minWidth: column.minWidth,
-                        color: "white",
-                        background: "#1e3547",
-                      }}
-                    >
-                      {column.label}
-                    </TableCell>
-                  ))}
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {displayData
-                  .slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage)
-                  .map((row, index) => (
-                    <TableRow
-                      hover
-                      role="checkbox"
-                      tabIndex={-1}
-                      key={index}
-                      onClick={() => handleRowClick(row)}
-                      sx={{
-                        "&:hover": { backgroundColor: "#1ab394" },
-                        backgroundColor:
-                          row.ID === selectedID ? "#1ab394" : "inherit",
-                      }}
-                    >
-                      {columns.map((column) => {
-                        const value = row[column.id];
-                        return (
-                          <TableCell
-                            key={column.id}
-                            align="center"
-                            sx={{
-                              background: "#293846",
-                              color: "white",
-                              borderColor: "#4c5b5b",
-                            }}
-                          >
-                            {value}
-                          </TableCell>
-                        );
-                      })}
-                    </TableRow>
-                  ))}
-              </TableBody>
-            </Table>
-          </TableContainer>
-          <TablePagination
-            rowsPerPageOptions={[10, 25]}
-            component="div"
-            count={displayData.length}
-            rowsPerPage={rowsPerPage}
-            page={page}
-            onPageChange={handleChangePage}
-            onRowsPerPageChange={handleChangeRowsPerPage}
-            sx={{ color: "white" }}
-          />
-        </Paper>
+        <DOGRTableComponent
+          columns={columns}
+          data={displayData}
+          onRowClick={handleRowClick}
+          pagination={true}
+          maxHeight={440}
+          minHeight={0}
+        />
       </div>
     </MainLayout>
   );

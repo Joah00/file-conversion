@@ -11,6 +11,7 @@ import TableRow from "@mui/material/TableRow";
 import TablePagination from "@mui/material/TablePagination";
 import { TextField } from "@mui/material";
 import dayjs from "dayjs";
+import DOGRTableComponent from "../Components/DOGRTableComponent";
 
 function GoodsReceivedDatabasePage() {
   const columns = [
@@ -120,6 +121,10 @@ function GoodsReceivedDatabasePage() {
     fetchGRData();
   }, []);
 
+  const handleRowClick = (row) => {
+    console.log("Row clicked", row);  
+  };
+
   return (
     <MainLayout>
       <div className="GR-container">
@@ -204,77 +209,14 @@ function GoodsReceivedDatabasePage() {
             />
           </div>
         </div>
-        <Paper
-          sx={{
-            width: "100%",
-            overflow: "hidden",
-            background: "#293846",
-            color: "white",
-          }}
-        >
-          <TableContainer sx={{ maxHeight: 440 }}>
-            <Table stickyHeader aria-label="sticky table">
-              <TableHead>
-                <TableRow>
-                  {columns.map((column) => (
-                    <TableCell
-                      key={column.id}
-                      align="center"
-                      style={{
-                        minWidth: column.minWidth,
-                        color: "white",
-                        background: "#1e3547",
-                      }}
-                    >
-                      {column.label}
-                    </TableCell>
-                  ))}
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {GRData.slice(
-                  page * rowsPerPage,
-                  page * rowsPerPage + rowsPerPage
-                ).map((row, index) => (
-                  <TableRow
-                    hover
-                    role="checkbox"
-                    tabIndex={-1}
-                    key={index}
-                    sx={{ "&:hover": { backgroundColor: "#1ab394" } }}
-                  >
-                    {columns.map((column) => {
-                      const value = row[column.id];
-                      return (
-                        <TableCell
-                          key={column.id}
-                          align="center"
-                          sx={{
-                            background: "#293846",
-                            color: "white",
-                            borderColor: "#4c5b5b",
-                          }}
-                        >
-                          {value}
-                        </TableCell>
-                      );
-                    })}
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </TableContainer>
-          <TablePagination
-            rowsPerPageOptions={[10, 25]}
-            component="div"
-            count={GRData.length}
-            rowsPerPage={rowsPerPage}
-            page={page}
-            onPageChange={handleChangePage}
-            onRowsPerPageChange={handleChangeRowsPerPage}
-            sx={{ color: "white" }}
-          />
-        </Paper>
+        <DOGRTableComponent
+          columns={columns}
+          data={GRData}
+          onRowClick={handleRowClick}
+          pagination={true}
+          maxHeight={440}
+          minHeight="0"
+        />
       </div>
     </MainLayout>
   );
