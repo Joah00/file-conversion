@@ -146,104 +146,152 @@ function ConvertPage() {
     }
   };
 
+  // const handleUpload = async () => {
+  //   if (uploadedFiles.length === 0) {
+  //     alert("Please upload a PDF file before submitting.");
+  //     return;
+  //   }
+
+  //   try {
+  //     const formData = new FormData();
+  //     uploadedFiles.forEach((file, index) => {
+  //       formData.append("file", file);
+  //     });
+
+  //     // Step 1: Upload the file to the delivery order endpoint
+  //     const dbResponse = await fetch(
+  //       "http://127.0.0.1:5000/upload_delivery_order",
+  //       {
+  //         method: "POST",
+  //         headers: {
+  //           Authorization: "Bearer " + localStorage.getItem("access_token"),
+  //         },
+  //         body: formData,
+  //       }
+  //     );
+
+  //     const dbData = await dbResponse.json();
+  //     if (!dbResponse.ok) {
+  //       alert(dbData.error || "Failed to upload file to database.");
+  //       return;
+  //     }
+
+  //     alert("File uploaded successfully to the database.");
+
+  //     // Step 2: Process the PDF content
+  //     const pdfProcessingResponse = await fetch(
+  //       "http://127.0.0.1:5000/process_pdf",
+  //       {
+  //         method: "POST",
+  //         headers: {
+  //           Authorization: "Bearer " + localStorage.getItem("access_token"),
+  //         },
+  //         body: formData,
+  //       }
+  //     );
+
+  //     const pdfData = await pdfProcessingResponse.json();
+  //     if (!pdfProcessingResponse.ok) {
+  //       alert(pdfData.error || "Failed to process PDF.");
+  //       return;
+  //     }
+
+  //     alert(pdfData.message);
+
+  //     // Step 3: NLP Processing with OpenAI
+  //     const nlpResponse = await fetch("http://127.0.0.1:5000/nlp_processing", {
+  //       method: "POST",
+  //       headers: {
+  //         Authorization: "Bearer " + localStorage.getItem("access_token"),
+  //         "Content-Type": "application/json",
+  //       },
+  //       body: JSON.stringify({ text: pdfData.extracted_text }),
+  //     });
+
+  //     const nlpData = await nlpResponse.json();
+  //     if (!nlpResponse.ok) {
+  //       alert(nlpData.error || "Failed NLP processing.");
+  //       return;
+  //     }
+
+  //     // Step 5: Map to template using the returned structured data from NLP
+  //     await handleMappingToTemplate(nlpData.structured_data);
+  //     setUploadedFiles([]);
+
+  //     // Step 6: Generate PDF and open it in a new tab
+  //     const generatedPdfResponse = await fetch(
+  //       "http://127.0.0.1:5000/generate_pdf",
+  //       {
+  //         method: "POST",
+  //         headers: {
+  //           Authorization: "Bearer " + localStorage.getItem("access_token"),
+  //           "Content-Type": "application/json",
+  //         },
+  //         body: JSON.stringify({ mappedData: nlpData.structured_data }),
+  //       }
+  //     );
+
+  //     if (!generatedPdfResponse.ok) {
+  //       const errorData = await generatedPdfResponse.json();
+  //       alert(errorData.error || "Failed to generate PDF.");
+  //       return;
+  //     }
+
+  //     const pdfBlob = await generatedPdfResponse.blob();
+  //     const pdfUrl = URL.createObjectURL(pdfBlob);
+  //     window.open(pdfUrl, "_blank");
+  //     setUploadedFiles([]);
+  //   } catch (error) {
+  //     console.error("Error during file processing:", error);
+  //     alert("Failed to complete the upload and processing.");
+  //   }
+  // };
+
   const handleUpload = async () => {
-    if (uploadedFiles.length === 0) {
-      alert("Please upload a PDF file before submitting.");
+    if (!selectedTemplateId) {
+      alert("Please select a template before converting.");
       return;
     }
 
     try {
-      const formData = new FormData();
-      uploadedFiles.forEach((file, index) => {
-        formData.append("file", file);
-      });
+      // Hardcoded structured data for multiple prices
+      const testStructuredData = {
+        "Unit Price 1": ["34.23"],
+        "Unit Price 2": ["45.67"],
+        "Unit Price 3": ["29.99"],
+        "Unit Price 4": ["39.00"],
+        "Unit Price 5": ["55.50"],
+      };
 
-      // Step 1: Upload the file to the delivery order endpoint
-      const dbResponse = await fetch(
-        "http://127.0.0.1:5000/upload_delivery_order",
+      // Call the mapping API directly with multiple prices
+      const mappingResponse = await fetch(
+        "http://127.0.0.1:5000/map_to_template",
         {
           method: "POST",
           headers: {
-            Authorization: "Bearer " + localStorage.getItem("access_token"),
-          },
-          body: formData,
-        }
-      );
-
-      const dbData = await dbResponse.json();
-      if (!dbResponse.ok) {
-        alert(dbData.error || "Failed to upload file to database.");
-        return;
-      }
-
-      alert("File uploaded successfully to the database.");
-
-      // Step 2: Process the PDF content
-      const pdfProcessingResponse = await fetch(
-        "http://127.0.0.1:5000/process_pdf",
-        {
-          method: "POST",
-          headers: {
-            Authorization: "Bearer " + localStorage.getItem("access_token"),
-          },
-          body: formData,
-        }
-      );
-
-      const pdfData = await pdfProcessingResponse.json();
-      if (!pdfProcessingResponse.ok) {
-        alert(pdfData.error || "Failed to process PDF.");
-        return;
-      }
-
-      alert(pdfData.message);
-
-      // Step 3: NLP Processing with OpenAI
-      const nlpResponse = await fetch("http://127.0.0.1:5000/nlp_processing", {
-        method: "POST",
-        headers: {
-          Authorization: "Bearer " + localStorage.getItem("access_token"),
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ text: pdfData.extracted_text }),
-      });
-
-      const nlpData = await nlpResponse.json();
-      if (!nlpResponse.ok) {
-        alert(nlpData.error || "Failed NLP processing.");
-        return;
-      }
-
-      // Step 5: Map to template using the returned structured data from NLP
-      await handleMappingToTemplate(nlpData.structured_data);
-      setUploadedFiles([]);
-
-      // Step 6: Generate PDF and open it in a new tab
-      const generatedPdfResponse = await fetch(
-        "http://127.0.0.1:5000/generate_pdf",
-        {
-          method: "POST",
-          headers: {
-            Authorization: "Bearer " + localStorage.getItem("access_token"),
             "Content-Type": "application/json",
+            Authorization: "Bearer " + localStorage.getItem("access_token"),
           },
-          body: JSON.stringify({ mappedData: nlpData.structured_data }),
+          body: JSON.stringify({
+            template_id: selectedTemplateId,
+            structured_data: testStructuredData,
+          }),
         }
       );
 
-      if (!generatedPdfResponse.ok) {
-        const errorData = await generatedPdfResponse.json();
-        alert(errorData.error || "Failed to generate PDF.");
+      if (!mappingResponse.ok) {
+        const errorData = await mappingResponse.json();
+        alert(errorData.error || "Failed to map data to template.");
         return;
       }
 
-      const pdfBlob = await generatedPdfResponse.blob();
+      // Handle the PDF response directly
+      const pdfBlob = await mappingResponse.blob();
       const pdfUrl = URL.createObjectURL(pdfBlob);
-      window.open(pdfUrl, "_blank");
-      setUploadedFiles([]);
+      window.open(pdfUrl, "_blank"); // Open generated PDF in a new tab
     } catch (error) {
       console.error("Error during file processing:", error);
-      alert("Failed to complete the upload and processing.");
+      alert("Failed to complete the mapping and PDF generation.");
     }
   };
 

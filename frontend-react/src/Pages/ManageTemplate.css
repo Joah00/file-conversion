@@ -12,6 +12,10 @@ h2 {
     margin-bottom: 20px;
 }
 
+.add-template {
+    margin-top: 50px;
+}
+
 /* Styling for the description text field */
 .template-description-field {
     width: 100%;

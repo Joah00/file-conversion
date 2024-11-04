@@ -13,10 +13,11 @@ import {
 function DOGRTableComponent({
   columns,
   data,
-  onRowClick,
+  onRowClick = () => {},
   pagination = false,
   maxHeight = 440, 
-  minHeight = 300 
+  minHeight = 300,
+  customRender = false
 }) {
   const [page, setPage] = React.useState(0);
   const [rowsPerPage, setRowsPerPage] = React.useState(5);
@@ -85,11 +86,11 @@ function DOGRTableComponent({
                             : row.status === "New"
                             ? '#f0ad4e'
                             : '#d9534f')
-                        : 'white', // Set specific colors for the 'status' column as before
+                        : 'white', 
                       borderColor: '#4c5b5b',
                     }}
                   >
-                    {row[column.id]}
+                    {customRender && column.renderCell ? column.renderCell(row) : row[column.id]}
                   </TableCell>
                 ))}
               </TableRow>
@@ -111,7 +112,7 @@ function DOGRTableComponent({
           page={page}
           onPageChange={handleChangePage}
           onRowsPerPageChange={handleChangeRowsPerPage}
-          sx={{ color: 'white' }} // Ensure pagination text color is white
+          sx={{ color: 'white' }}
         />
       )}
     </Paper>

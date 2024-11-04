@@ -11,7 +11,7 @@ function HistoryPage() {
     { id: "GRID", label: "GR ID", minWidth: 70 },
     { id: "GR_document_Name", label: "GR Document Name", minWidth: 120 },
     { id: "dateConverted", label: "Conversion Date", minWidth: 100 },
-    { id: "desc", label: "Status", minWidth: 50 },
+    { id: "status", label: "Status", minWidth: 50 },
   ];
 
   const [historyData, setHistoryData] = useState([]);

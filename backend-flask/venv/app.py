@@ -14,14 +14,15 @@ import openai
 import os
 from werkzeug.utils import secure_filename
 from flask import send_file
-from reportlab.lib.pagesizes import letter
-from reportlab.pdfgen import canvas
 from io import BytesIO
 import fitz
 import spacy
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from docx import Document
+import base64
+import tempfile
+from docx2pdf import convert
 
 
 app = Flask(__name__)
@@ -763,7 +764,7 @@ def get_history():
             func.coalesce(GoodsReceivedOrder.GRID, '-').label('GRID'),
             func.coalesce(GoodsReceivedOrder.documentName, '-').label('GR_document_Name'),
             GoodsReceivedOrder.dateConverted,
-            func.coalesce(ConvertStatus.desc, 'Failed').label('desc'),
+            func.coalesce(ConvertStatus.desc, 'Failed').label('status'),
             DeliveryOrder.dateCreated.label('Uploaded_Date')
         ).outerjoin(GoodsReceivedOrder, 
                     (GoodsReceivedOrder.deliverOrderId == DeliveryOrder.ID) & 
@@ -780,7 +781,7 @@ def get_history():
                 'GR_document_Name': result.GR_document_Name,
                 # Convert dateConverted to a string if it's not None, otherwise set to '-'
                 'dateConverted': result.dateConverted.strftime('%Y-%m-%d') if result.dateConverted else '-',
-                'desc': result.desc,
+                'status': result.status,
                 # Convert Uploaded_Date to a string if it's not None, otherwise set to '-'
                 'Uploaded_Date': result.Uploaded_Date.strftime('%Y-%m-%d') if result.Uploaded_Date else '-'
             } for result in results
@@ -896,23 +897,53 @@ def map_to_template():
         if not template or not template.templateFile:
             return jsonify({'error': 'Template not found or file missing'}), 404
 
-        # Load the DOCX template from the binary data
+        # Load the DOCX template from binary data
         docx_file = BytesIO(template.templateFile)
         document = Document(docx_file)
 
-        # Insert structured data into the document
+        # Replace placeholders in the document with structured data
         for key, values in structured_data.items():
-            for value in values:
-                document.add_paragraph(f"{key}: {value}")
+            placeholder = f"{{{{{key}}}}}"
+            for paragraph in document.paragraphs:
+                if placeholder in paragraph.text:
+                    for value in values:
+                        paragraph.text = paragraph.text.replace(placeholder, value)
+            # Handle placeholders within tables if the template has them
+            for table in document.tables:
+                for row in table.rows:
+                    for cell in row.cells:
+                        if placeholder in cell.text:
+                            for value in values:
+                                cell.text = cell.text.replace(placeholder, value)
 
-        # Save modified document as a new DOCX file
-        document_filename = f"generated_template_{template_id}.docx"
-        document.save(document_filename)
+        # Save the modified DOCX to a temporary file
+        with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp_docx_file:
+            tmp_docx_filename = tmp_docx_file.name
+            document.save(tmp_docx_filename)
 
-        return jsonify({'message': 'Document generated successfully!', 'document_filename': document_filename}), 200
+        # Convert the modified DOCX to PDF
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp_pdf_file:
+            tmp_pdf_filename = tmp_pdf_file.name
+        convert(tmp_docx_filename, tmp_pdf_filename)
+
+        # Read the generated PDF and send it as a response
+        with open(tmp_pdf_filename, "rb") as pdf_file:
+            pdf_data = BytesIO(pdf_file.read())
+
+        # Clean up temporary files
+        os.remove(tmp_docx_filename)
+        os.remove(tmp_pdf_filename)
+
+        return send_file(
+            pdf_data,
+            as_attachment=True,
+            download_name="generated_document.pdf",
+            mimetype='application/pdf'
+        )
 
     except Exception as e:
         return jsonify({'error': f'Failed to map and generate template: {str(e)}'}), 500
+
     
 
 @app.route('/generate_pdf', methods=['POST'])
@@ -1017,7 +1048,7 @@ def upload_gr_template():
 
 @app.route('/get_gr_templates_desc', methods=['GET'])
 @jwt_required()  # Assuming JWT authentication is required
-def get_gr_templates():
+def get_gr_templates_desc():
     try:
         # Query the GRTemplate table to get only the ID and description columns
         templates = db.session.query(GRTemplate.ID, GRTemplate.desc).all()
@@ -1031,6 +1062,39 @@ def get_gr_templates():
         return jsonify({"error": "Failed to fetch templates"}), 500
     
 
+@app.route('/get_gr_templates', methods=['GET'])
+@jwt_required()
+def get_gr_templates():
+    try:
+        templates = db.session.query(GRTemplate.ID, GRTemplate.fileName, GRTemplate.desc, GRTemplate.templateFile).all()
+        result = [
+            {
+                "ID": template.ID,
+                "fileName": template.fileName,
+                "desc": template.desc,
+                "templateFile": base64.b64encode(template.templateFile).decode("utf-8") 
+            }
+            for template in templates
+        ]
+        return jsonify(result), 200
+    except Exception as e:
+        return jsonify({"error": f"Failed to fetch templates: {str(e)}"}), 500
+    
+    
+@app.route('/delete_gr_template/<int:id>', methods=['DELETE'])
+@jwt_required()
+def delete_gr_template(id):
+    try:
+        template = db.session.query(GRTemplate).filter_by(ID=id).first()
+        if not template:
+            return jsonify({'error': 'Template not found'}), 404
+
+        db.session.delete(template)
+        db.session.commit()
+        return jsonify({'message': 'Template deleted successfully'}), 200
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': f'Failed to delete template: {str(e)}'}), 500
 
 
 
