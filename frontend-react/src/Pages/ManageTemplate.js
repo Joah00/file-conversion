@@ -13,6 +13,7 @@ function ManageTemplate() {
     { id: "ID", label: "ID" },
     { id: "fileName", label: "File Name" },
     { id: "desc", label: "Description" },
+    { id: "displayName", label: "Uploaded By" },
     {
       id: "action",
       label: "Action",
@@ -200,10 +201,11 @@ function ManageTemplate() {
         <h3 className="view-template">View Template</h3>
         <DOGRTableComponent
           columns={columns}
-          data={templateData.map(({ ID, fileName, desc }) => ({
+          data={templateData.map(({ ID, fileName, desc, displayName }) => ({
             ID,
             fileName,
             desc,
+            displayName
           }))}
           pagination={true}
           maxHeight={440}

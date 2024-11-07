@@ -7,10 +7,11 @@ import urllib.parse
 from sqlalchemy.orm import Session as DBSession
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy import func
+from sqlalchemy import func, text
 from datetime import datetime
+import pdfplumber
+import pytesseract
 from PIL import Image
-import openai
 import os
 from werkzeug.utils import secure_filename
 from flask import send_file
@@ -23,6 +24,12 @@ from docx import Document
 import base64
 import tempfile
 from docx2pdf import convert
+import cv2
+import numpy as np
+import io
+from pathlib import Path
+import re
+from config import SQLALCHEMY_DATABASE_URI, SQLALCHEMY_TRACK_MODIFICATIONS, JWT_SECRET_KEY, JWT_ACCESS_TOKEN_EXPIRES
 
 
 app = Flask(__name__)
@@ -34,16 +41,18 @@ connection_string = urllib.parse.quote_plus(
     "DATABASE=neuroformatterDB;"
     "Trusted_Connection=yes;"
 )
-app.config['SQLALCHEMY_DATABASE_URI'] = f'mssql+pyodbc:///?odbc_connect={connection_string}'
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config['JWT_SECRET_KEY'] = 'your-secret-key'  
-app.config['JWT_ACCESS_TOKEN_EXPIRES'] = False  
-openai.api_key = os.getenv("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")
+
+app.config['SQLALCHEMY_DATABASE_URI'] = SQLALCHEMY_DATABASE_URI
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = SQLALCHEMY_TRACK_MODIFICATIONS
+app.config['JWT_SECRET_KEY'] = JWT_SECRET_KEY
+app.config['JWT_ACCESS_TOKEN_EXPIRES'] = JWT_ACCESS_TOKEN_EXPIRES
 jwt = JWTManager(app)
 
 db = SQLAlchemy(app)
 Base = automap_base()
 nlp = spacy.load("en_core_web_sm")
+
+pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
 def name_for_scalar_relationship(base, local_cls, referred_cls, constraint):
     name = referred_cls.__name__.lower() + "_ref"
@@ -75,23 +84,33 @@ def login():
     
     try:
         # Fetch the user and join with the Authority table to get the role description
-        user = session_db.query(Account, Authority).join(Authority, Account.authority == Authority.ID).filter(Account.username == auth.get('username')).first()
-        
-        # Close the session after fetching the user
+        user = (session_db.query(Account, Authority)
+                .join(Authority, Account.authority == Authority.ID)
+                .filter(Account.username == auth.get('username'))
+                .first())
+
         session_db.close()
 
-        # Check if the user exists and the password matches
-        if user and user.Account.password == auth.get('password'):
-            # Get the authority description (role) from the joined Authority table
-            authority_desc = user.Authority.desc
+        # Check if the user is active
+        if user.Account.status != 1:
+            return jsonify({"msg": "Account is not active"}), 403
 
-            # Create a new token with the user's ID embedded
-            access_token = create_access_token(identity=user.Account.ID)
-            return jsonify(access_token=access_token, role=authority_desc), 200
-        else:
-            return jsonify({"msg": "Bad username or password"}), 401
+        # Encrypt the input password to compare with stored encrypted password
+        encrypted_password = session_db.execute(
+            text("SELECT CONVERT(VARBINARY(600), ENCRYPTBYPASSPHRASE('password', :password)) AS encrypted_pass"),
+            {"password": auth.get('password')}
+        ).scalar()
+
+        # Check if encrypted passwords match
+        if user.Account.password != encrypted_password:
+            return jsonify({"msg": "Incorrect username or password"}), 401
+
+        # Generate a token and return the user's role
+        authority_desc = user.Authority.desc
+        access_token = create_access_token(identity=user.Account.ID)
+        return jsonify(access_token=access_token, role=authority_desc), 200
+
     except Exception as e:
-        # Close the session in case of an exception
         session_db.close()
         return jsonify({"msg": f"An error occurred: {str(e)}"}), 500
     
@@ -323,12 +342,19 @@ def create_account():
         if not all([status, authority, username, password]):
             return jsonify({'error': 'Missing required fields'}), 400
 
+        # Encrypt password before storing
+        encrypted_password = session.execute(
+            text("SELECT CONVERT(VARBINARY(600), ENCRYPTBYPASSPHRASE('password', :password)) AS encrypted_pass"),
+            {"password": password}
+        ).scalar()
+
+        # Create a new account with encrypted password
         new_account = Account(
             status=status,
             authority=authority,
             username=username,
-            password=password,
-            dateCreated=db.func.current_timestamp()  
+            password=encrypted_password,
+            dateCreated=db.func.current_timestamp()
         )
 
         session.add(new_account)
@@ -355,15 +381,23 @@ def update_account(id):
         if not account:
             return jsonify({'error': 'Account not found'}), 404
 
-        # Update the account fields
+        # Update username if provided
         account.username = data.get('username', account.username)
-        account.password = data.get('password', account.password)
+
+        # Update password if provided
+        new_password = data.get('password')
+        if new_password:
+            encrypted_password = session.execute(
+                text("SELECT CONVERT(VARBINARY(600), ENCRYPTBYPASSPHRASE('password', :password)) AS encrypted_pass"),
+                {"password": new_password}
+            ).scalar()
+            account.password = encrypted_password
+
         # Update authority if provided
         authority = data.get('authority')
         if authority is not None:
             account.authority = authority
 
-        # Commit the changes
         session.commit()
         session.close()
 
@@ -372,7 +406,6 @@ def update_account(id):
         session.rollback()
         session.close()
         return jsonify({'error': str(e)}), 500
-
     
 
 @app.route('/change_account_status/<int:id>', methods=['PUT'])
@@ -650,12 +683,23 @@ def change_password():
         if not account:
             return jsonify({'error': 'Account not found'}), 404
 
-        # Verify that the old password matches
-        if account.password != old_password:
+        # Encrypt the old password to verify it matches the stored encrypted password
+        encrypted_old_password = session.execute(
+            text("SELECT CONVERT(VARBINARY(600), ENCRYPTBYPASSPHRASE('password', :old_password)) AS encrypted_pass"),
+            {"old_password": old_password}
+        ).scalar()
+
+        if account.password != encrypted_old_password:
             return jsonify({'error': 'Incorrect old password'}), 401
 
+        # Encrypt the new password before storing
+        encrypted_new_password = session.execute(
+            text("SELECT CONVERT(VARBINARY(600), ENCRYPTBYPASSPHRASE('password', :new_password)) AS encrypted_pass"),
+            {"new_password": new_password}
+        ).scalar()
+
         # Update the password directly
-        account.password = new_password
+        account.password = encrypted_new_password
         session.commit()
         session.close()
 
@@ -729,14 +773,13 @@ def get_user_password():
         # Get the user ID from the token
         user_id = get_jwt_identity()
 
-        # Fetch the password from the Account table using the user's ID
+        # Fetch the encrypted password from the Account table
         result = session.query(Account.password).join(User, User.accountID == Account.ID).filter(User.ID == user_id).first()
 
         # If no password is found, return an error response
         if not result:
             return jsonify({'error': 'User not found or password not available'}), 404
 
-        # Return the password in the response (in a real-world scenario, you wouldn't expose the password like this)
         return jsonify({'password': result[0]}), 200
 
     except Exception as e:
@@ -844,51 +887,127 @@ def upload_delivery_order():
         session.close()
 
 
-def extract_text_from_pdf(file):
+
+    
+
+custom_config = r'--psm 6 -c tessedit_char_whitelist="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.,:-()&/"'
+# Create output directory for debugging images
+output_dir = "ocr_debug_images"
+os.makedirs(output_dir, exist_ok=True)
+
+def save_image(image, filename):
+    """ Helper function to save images for debugging purposes """
+    filepath = os.path.join(output_dir, filename)
+    cv2.imwrite(filepath, image)
+    print(f"Image saved at {filepath}")
+
+def zoom_extract_scroll(image, page_num, scroll_height=500):
     text = ""
-    with fitz.open(stream=file.read(), filetype="pdf") as pdf:
-        for page_num in range(pdf.page_count):
-            page = pdf[page_num]
-            text += page.get_text("text")
+    img_height = image.shape[0]
+    current_y = 0
+    segment_num = 1
+
+    while current_y < img_height:
+        # Define the current segment as a "viewport"
+        segment = image[current_y:current_y + scroll_height, :]
+        
+        # Zoom in (resize) the segment to enhance OCR accuracy
+        scale_factor = 2  # Change this if needed for better clarity
+        zoomed_segment = cv2.resize(segment, None, fx=scale_factor, fy=scale_factor, interpolation=cv2.INTER_LINEAR)
+        
+        # Save the zoomed segment image for debugging
+        save_image(zoomed_segment, f"page_{page_num}_segment_{segment_num}_zoomed.png")
+        
+        # Extract text from the zoomed segment using Tesseract
+        ocr_text = pytesseract.image_to_string(zoomed_segment, config=custom_config)
+        text += ocr_text + "\n\n"
+
+        # Move to the next "scroll" position
+        current_y += scroll_height
+        segment_num += 1
+
     return text
 
 
-@app.route('/process_pdf', methods=['POST'])
-def process_pdf():
+price_keywords = ["Unit Price", "Unit"]
+def extract_description_and_price(text):
+    descriptions = []
+    prices = []
+
+    # Process text with spaCy
+    doc = nlp(text)
+
+    # Extract potential descriptions based on noun phrases
+    for np in doc.noun_chunks:
+        if len(np.text) > 3:  # Filter out short phrases
+            descriptions.append(np.text.strip())
+
+    # Extract prices based on patterns with keywords or standalone numbers
+    for line in text.splitlines():
+        for keyword in price_keywords:
+            match = re.search(rf"{keyword}\s*[:$]?\s*([\d,.]+)", line, re.IGNORECASE)
+            if match:
+                prices.append(match.group(1).replace(",", ""))  # Clean and add price
+        # Also look for standalone numbers that could be unit prices
+        price_match = re.search(r"\b\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?\b", line)
+        if price_match and not any(keyword in line for keyword in price_keywords):
+            prices.append(price_match.group(0))
+
+    return {
+        "Description": descriptions,
+        "Unit Price": prices
+    }
+
+
+def extract_text_from_pdf(file):
+    structured_data = {'description': [], 'unit_price': []}  # To store extracted values
+    with pdfplumber.open(file) as pdf:
+        for page_num, page in enumerate(pdf.pages):
+            page_image = page.to_image(resolution=300)
+            pil_image = page_image.original
+            open_cv_image = np.array(pil_image)[:, :, ::-1].copy()
+
+            # Use the "zoom-extract-scroll" function, and get OCR output
+            page_text = zoom_extract_scroll(open_cv_image, page_num + 1)
+            
+            # Use spaCy and regex-enhanced function to extract descriptions and prices
+            extracted_data = extract_description_and_price(page_text)
+            structured_data['description'].extend(extracted_data['Description'])
+            structured_data['unit_price'].extend(extracted_data['Unit Price'])
+
+    return structured_data
+
+
+@app.route('/extract_text', methods=['POST'])
+def extract_text():
     if 'file' not in request.files:
         return jsonify({'error': 'No file provided'}), 400
 
     file = request.files['file']
     if file and file.filename.endswith('.pdf'):
-        # Step 1: Extract text from PDF
-        extracted_text = extract_text_from_pdf(file)
-
-        # Step 2: Use spaCy for NLP processing on the extracted text
-        doc = nlp(extracted_text)
-        
-        # Extract entities and organize them as structured data
-        structured_data = {}
-        for ent in doc.ents:
-            structured_data[ent.label_] = structured_data.get(ent.label_, []) + [ent.text]
-        
-        return jsonify({
-            'message': 'Text extracted and processed with NLP successfully!',
-            'structured_data': structured_data
-        }), 200
-
+        try:
+            # Extract text and structured data from the PDF
+            extracted_text, extracted_data = extract_text_from_pdf(file)
+            
+            # Return both the full text and the structured data for mapping
+            return jsonify({
+                'extracted_text': extracted_text,
+                'structured_data': extracted_data
+            }), 200
+        except Exception as e:
+            return jsonify({'error': f'Failed to extract text: {str(e)}'}), 500
     else:
         return jsonify({'error': 'Invalid file type. Only PDF files are allowed.'}), 400
-    
 
+ 
 @app.route('/map_to_template', methods=['POST'])
 @jwt_required()
 def map_to_template():
     try:
-        # Get template ID and structured data from the request
         data = request.get_json()
         template_id = data.get('template_id')
         structured_data = data.get('structured_data')
-        
+
         if not template_id or not structured_data:
             return jsonify({'error': 'Template ID and structured data are required'}), 400
 
@@ -901,104 +1020,61 @@ def map_to_template():
         docx_file = BytesIO(template.templateFile)
         document = Document(docx_file)
 
-        # Replace placeholders in the document with structured data
-        for key, values in structured_data.items():
-            placeholder = f"{{{{{key}}}}}"
-            for paragraph in document.paragraphs:
-                if placeholder in paragraph.text:
-                    for value in values:
-                        paragraph.text = paragraph.text.replace(placeholder, value)
-            # Handle placeholders within tables if the template has them
-            for table in document.tables:
-                for row in table.rows:
-                    for cell in row.cells:
-                        if placeholder in cell.text:
-                            for value in values:
-                                cell.text = cell.text.replace(placeholder, value)
+        # Replace placeholders for descriptions and unit prices
+        descriptions = structured_data.get('description', [])
+        unit_prices = structured_data.get('unit_price', [])
+
+        # Determine the maximum number of placeholders for dynamic fields
+        max_placeholders = max(len(descriptions), len(unit_prices))
+
+        # Replace description placeholders (or with empty string if no data available)
+        for i in range(1, max_placeholders + 1):
+            description_placeholder = f"{{{{Description {i}}}}}"
+            unit_price_placeholder = f"{{{{Unit Price {i}}}}}"
+
+            description_value = descriptions[i - 1] if i - 1 < len(descriptions) else ""
+            unit_price_value = unit_prices[i - 1] if i - 1 < len(unit_prices) else ""
+
+            # Replace placeholders in the document
+            replace_placeholder_in_document(document, description_placeholder, description_value)
+            replace_placeholder_in_document(document, unit_price_placeholder, unit_price_value)
 
         # Save the modified DOCX to a temporary file
         with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp_docx_file:
             tmp_docx_filename = tmp_docx_file.name
             document.save(tmp_docx_filename)
 
-        # Convert the modified DOCX to PDF
-        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp_pdf_file:
-            tmp_pdf_filename = tmp_pdf_file.name
-        convert(tmp_docx_filename, tmp_pdf_filename)
-
-        # Read the generated PDF and send it as a response
-        with open(tmp_pdf_filename, "rb") as pdf_file:
-            pdf_data = BytesIO(pdf_file.read())
-
-        # Clean up temporary files
+        # Read the generated DOCX and send it as a response
+        with open(tmp_docx_filename, "rb") as docx_file:
+            docx_data = BytesIO(docx_file.read())
         os.remove(tmp_docx_filename)
-        os.remove(tmp_pdf_filename)
 
         return send_file(
-            pdf_data,
+            docx_data,
             as_attachment=True,
-            download_name="generated_document.pdf",
-            mimetype='application/pdf'
+            download_name="generated_document.docx",
+            mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document'
         )
 
     except Exception as e:
         return jsonify({'error': f'Failed to map and generate template: {str(e)}'}), 500
 
+
+def replace_placeholder_in_document(document, placeholder, value):
+    """Helper function to replace placeholder in document paragraphs and tables."""
+    # Replace placeholder in paragraphs
+    for paragraph in document.paragraphs:
+        if placeholder in paragraph.text:
+            paragraph.text = paragraph.text.replace(placeholder, value)
+
+    # Replace placeholder in table cells
+    for table in document.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                if placeholder in cell.text:
+                    cell.text = cell.text.replace(placeholder, value)
+
     
-
-@app.route('/generate_pdf', methods=['POST'])
-@jwt_required()
-def generate_pdf():
-    try:
-        # Get mapped data from the request
-        data = request.get_json()
-        mapped_data = data.get("mappedData")
-        
-        if not mapped_data:
-            return jsonify({'error': 'No mapped data provided'}), 400
-
-        # Set up a BytesIO buffer for the PDF
-        pdf_buffer = BytesIO()
-
-        # Create the PDF canvas
-        pdf_canvas = canvas.Canvas(pdf_buffer, pagesize=letter)
-        pdf_canvas.setTitle("Generated Document")
-
-        # Start writing content to the PDF
-        pdf_canvas.setFont("Helvetica", 12)
-        pdf_canvas.drawString(72, 750, "Generated Document")
-        
-        y_position = 720  # Initial position
-
-        for field, values in mapped_data.items():
-            for value in values:
-                pdf_canvas.drawString(72, y_position, f"{field}: {value}")
-                y_position -= 20  # Move down for each entry
-
-                # Check if the page needs to be continued
-                if y_position < 72:  # Avoid going too low on the page
-                    pdf_canvas.showPage()
-                    pdf_canvas.setFont("Helvetica", 12)
-                    y_position = 750  # Reset position on new page
-
-        # Save and close the PDF canvas
-        pdf_canvas.save()
-        pdf_buffer.seek(0)
-
-        # Define a filename for the PDF
-        pdf_filename = "generated_document.pdf"
-
-        # Send the PDF as a response
-        return send_file(
-            pdf_buffer,
-            as_attachment=True,
-            download_name=pdf_filename,
-            mimetype='application/pdf'
-        )
-
-    except Exception as e:
-        print(f"Error generating PDF: {str(e)}")
-        return jsonify({'error': f'Failed to generate PDF: {str(e)}'}), 500
 
 
 @app.route('/upload_gr_template', methods=['POST'])
@@ -1014,24 +1090,25 @@ def upload_gr_template():
 
         file = request.files['file']
         description = request.form.get('description', '')
-        
+
         # Validate the file and description
         if file.filename == '':
             return jsonify({'error': 'No selected file'}), 400
         if not description:
             return jsonify({'error': 'Description is required'}), 400
-        
+
         # Secure the file name and read file data as binary
         filename = secure_filename(file.filename)
         file_data = file.read()  # Read file content as binary
-        
-        # Insert into GRTemplate table
+
+        # Insert into GRTemplate table with createdBy field populated
         new_template = GRTemplate(
             templateFile=file_data,
             fileName=filename,
-            desc=description
+            desc=description,
+            createdBy=user_id  
         )
-        
+
         # Add and commit to database
         db.session.add(new_template)
         db.session.commit()
@@ -1066,16 +1143,25 @@ def get_gr_templates_desc():
 @jwt_required()
 def get_gr_templates():
     try:
-        templates = db.session.query(GRTemplate.ID, GRTemplate.fileName, GRTemplate.desc, GRTemplate.templateFile).all()
+        # Join GRTemplate with User to fetch displayName using the foreign key createdBy
+        templates = (
+            db.session.query(GRTemplate.ID, GRTemplate.fileName, GRTemplate.desc, GRTemplate.templateFile, User.displayName)
+            .join(User, GRTemplate.createdBy == User.ID)
+            .all()
+        )
+
+        # Format the response to include displayName
         result = [
             {
                 "ID": template.ID,
                 "fileName": template.fileName,
                 "desc": template.desc,
-                "templateFile": base64.b64encode(template.templateFile).decode("utf-8") 
+                "displayName": template.displayName,  # Include displayName for the frontend
+                "templateFile": base64.b64encode(template.templateFile).decode("utf-8")
             }
             for template in templates
         ]
+
         return jsonify(result), 200
     except Exception as e:
         return jsonify({"error": f"Failed to fetch templates: {str(e)}"}), 500

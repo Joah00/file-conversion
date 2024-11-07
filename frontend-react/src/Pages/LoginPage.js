@@ -49,30 +49,36 @@ function LoginPage({ setUserRole }) {
   const handleLogin = async (e) => {
     e.preventDefault();
     try {
-      const response = await fetch('http://127.0.0.1:5000/login', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        credentials: 'include',
-        body: JSON.stringify({ username: email, password: password }),
-      });
-  
-      if (!response.ok) {
-        const errorData = await response.json();
-        alert(errorData.msg || 'Login failed');
-        return;
-      }
-  
-      const data = await response.json();
-      localStorage.setItem('access_token', data.access_token);
-      setUserRole(data.role);
-      navigate('/homePage');
+        const response = await fetch('http://127.0.0.1:5000/login', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            credentials: 'include',
+            body: JSON.stringify({ username: email, password: password }),
+        });
+
+        if (response.status === 403) {
+            alert("Your account is not active. Please contact support.");
+            return;
+        }
+
+        if (!response.ok) {
+            const errorData = await response.json();
+            alert(errorData.msg || 'Login failed');
+            return;
+        }
+
+        const data = await response.json();
+        localStorage.setItem('access_token', data.access_token);
+        setUserRole(data.role);
+        navigate('/homePage');
     } catch (error) {
-      console.error('Login error:', error); 
-      alert('Network error. Check the server or CORS settings.');
+        console.error('Login error:', error);
+        alert('Network error. Check the server or CORS settings.');
     }
-  };
+};
+
   return (
     <ThemeProvider theme={theme}>
       <CssBaseline />
