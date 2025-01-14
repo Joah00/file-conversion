@@ -1,5 +1,4 @@
 from sqlalchemy.ext.automap import automap_base
-from sqlalchemy.orm import joinedload
 from flask_sqlalchemy import SQLAlchemy
 from flask import Flask, jsonify, make_response, request
 from flask_cors import CORS
@@ -8,28 +7,26 @@ from sqlalchemy.orm import Session as DBSession
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy import func, text
-from datetime import datetime
-import pdfplumber
 import pytesseract
-from PIL import Image
 import os
+import json
 from werkzeug.utils import secure_filename
 from flask import send_file
 from io import BytesIO
 import fitz
 import spacy
-from reportlab.lib.pagesizes import letter
-from reportlab.pdfgen import canvas
-from docx import Document
 import base64
 import tempfile
-from docx2pdf import convert
 import cv2
 import numpy as np
-import io
-from pathlib import Path
-import re
+import os
 from config import SQLALCHEMY_DATABASE_URI, SQLALCHEMY_TRACK_MODIFICATIONS, JWT_SECRET_KEY, JWT_ACCESS_TOKEN_EXPIRES
+import base64
+import vertexai
+from vertexai.generative_models import GenerativeModel, SafetySetting
+from openpyxl import load_workbook 
+from io import BytesIO             
+import tempfile    
 
 
 app = Flask(__name__)
@@ -81,36 +78,57 @@ with app.app_context():
 def login():
     auth = request.json
     session_db = DBSession(db.engine)
-    
+
     try:
-        # Fetch the user and join with the Authority table to get the role description
+        # Fetch the user account and associated authority details based on the username
         user = (session_db.query(Account, Authority)
                 .join(Authority, Account.authority == Authority.ID)
                 .filter(Account.username == auth.get('username'))
                 .first())
 
-        session_db.close()
-
-        # Check if the user is active
-        if user.Account.status != 1:
-            return jsonify({"msg": "Account is not active"}), 403
-
-        # Encrypt the input password to compare with stored encrypted password
-        encrypted_password = session_db.execute(
-            text("SELECT CONVERT(VARBINARY(600), ENCRYPTBYPASSPHRASE('password', :password)) AS encrypted_pass"),
-            {"password": auth.get('password')}
-        ).scalar()
-
-        # Check if encrypted passwords match
-        if user.Account.password != encrypted_password:
+        # Check if user exists
+        if not user:
+            session_db.close()
             return jsonify({"msg": "Incorrect username or password"}), 401
 
-        # Generate a token and return the user's role
-        authority_desc = user.Authority.desc
-        access_token = create_access_token(identity=user.Account.ID)
+        account = user.Account
+        authority = user.Authority
+
+        # Check if the user account is active
+        if account.status != 1:
+            session_db.close()
+            return jsonify({"msg": "Account is not active"}), 403
+
+        # Retrieve the stored salt and hash the input password with it
+        stored_salt = account.salt
+        if not stored_salt:
+            session_db.close()
+            return jsonify({"msg": "Salt not found for the user"}), 500
+
+        input_password = auth.get('password')
+        if not input_password:
+            session_db.close()
+            return jsonify({"msg": "Password is required"}), 400
+
+        # Hash the input password with the stored salt
+        hashed_input_password = session_db.execute(
+            text("SELECT HASHBYTES('SHA2_256', :password + CAST(:salt AS NVARCHAR(MAX))) AS hashed_password"),
+            {"password": input_password, "salt": stored_salt}
+        ).scalar()
+
+        # Compare the hashed input password with the stored password hash
+        if account.passwordHash != hashed_input_password:
+            session_db.close()
+            return jsonify({"msg": "Incorrect username or password"}), 401
+
+        # Generate a JWT token and return the user's role
+        authority_desc = authority.desc
+        access_token = create_access_token(identity=account.ID)
+        session_db.close()
         return jsonify(access_token=access_token, role=authority_desc), 200
 
     except Exception as e:
+        # Close session in case of an exception
         session_db.close()
         return jsonify({"msg": f"An error occurred: {str(e)}"}), 500
     
@@ -134,7 +152,7 @@ def get_display_name():
 def count_converted():
     user_id = get_jwt_identity()
     session_db = DBSession(db.engine)
-    count = session_db.query(DeliveryOrder).filter(DeliveryOrder.convertStatusId == 2).count()
+    count = session_db.query(DeliveryOrder).filter(DeliveryOrder.convertStatusId == 1).count()
     session_db.close()
     return jsonify({'count': count})
 
@@ -154,7 +172,7 @@ def count_uploaded():
 def count_failed():
     user_id = get_jwt_identity()
     session_db = DBSession(db.engine)
-    count = session_db.query(DeliveryOrder).filter(DeliveryOrder.convertStatusId == 3).count()
+    count = session_db.query(DeliveryOrder).filter(DeliveryOrder.convertStatusId == 2).count()
     session_db.close()
     return jsonify({'count': count})
 
@@ -196,7 +214,6 @@ def get_delivery_orders():
     try:
         orders = session.query(
             DeliveryOrder.ID,
-            DeliveryOrder.DOID,
             DeliveryOrder.documentName,
             DeliveryOrder.dateCreated,
             User.displayName.label('uploadBy'),
@@ -210,7 +227,7 @@ def get_delivery_orders():
         results = [{
             'ID': order.ID,
             'uploadBy': order.uploadBy,
-            'doid': order.DOID,
+            'doid': order.ID,
             'documentName': order.documentName,
             'uploadDate': order.dateCreated.strftime('%d-%m-%Y') if order.dateCreated else None,
             'status': order.status
@@ -253,7 +270,35 @@ def get_delivery_order_file(id):
     finally:
         session.close()
 
-    
+@app.route('/get_goods_received_order_file/<int:id>', methods=['GET'])
+@jwt_required()
+def get_goods_received_order_file(id):
+    session = db.session()
+
+    try:
+        # Query the GoodsReceivedOrder table by ID
+        goods_received_order = session.query(GoodsReceivedOrder).filter_by(ID=id).first()
+
+        # Ensure the record exists and has file data
+        if not goods_received_order or not goods_received_order.GRfile:
+            return jsonify({'error': 'File not found'}), 404
+
+        file_data = goods_received_order.GRfile
+
+        # Set Content-Type and filename for the file (use the appropriate content type)
+        response = make_response(file_data)
+        response.headers.set('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')  # MIME type for Excel
+        response.headers.set('Content-Disposition', f'attachment; filename="{goods_received_order.documentName}.xlsx"')  # Ensure the filename ends with .xlsx
+
+        return response
+
+    except Exception as e:
+        session.rollback()
+        return jsonify({'error': f'Failed to retrieve file: {str(e)}'}), 500
+
+    finally:
+        session.close()
+
 @app.route('/get_goods_received_orders', methods=['GET'])
 @jwt_required()
 def get_goods_received_orders():
@@ -262,8 +307,8 @@ def get_goods_received_orders():
     try:
         orders = session.query(
             User.displayName.label('createdBy'),
-            GoodsReceivedOrder.GRID,
-            DeliveryOrder.DOID.label('doid'),
+            GoodsReceivedOrder.ID.label('grid'),  
+            DeliveryOrder.ID.label('doid'),
             GoodsReceivedOrder.documentName.label('grDocumentName'),  
             DeliveryOrder.documentName.label('doDocumentName'), 
             GoodsReceivedOrder.dateConverted
@@ -275,7 +320,7 @@ def get_goods_received_orders():
 
         results = [{
             'convertedBy': order.createdBy,
-            'grid': order.GRID,
+            'grid': order.grid,
             'doid': order.doid,
             'grDocumentName': order.grDocumentName,  
             'doDocumentName': order.doDocumentName, 
@@ -339,21 +384,28 @@ def create_account():
         username = data.get('username')
         password = data.get('password')
 
+        # Validate required fields
         if not all([status, authority, username, password]):
             return jsonify({'error': 'Missing required fields'}), 400
 
-        # Encrypt password before storing
-        encrypted_password = session.execute(
-            text("SELECT CONVERT(VARBINARY(600), ENCRYPTBYPASSPHRASE('password', :password)) AS encrypted_pass"),
-            {"password": password}
+        # Generate a unique salt for the user
+        salt = session.execute(
+            text("SELECT CRYPT_GEN_RANDOM(32) AS salt")
         ).scalar()
 
-        # Create a new account with encrypted password
+        # Hash the password with the generated salt
+        hashed_password = session.execute(
+            text("SELECT HASHBYTES('SHA2_256', :password + CAST(:salt AS NVARCHAR(MAX))) AS hashed_password"),
+            {"password": password, "salt": salt}
+        ).scalar()
+
+        # Create a new account with hashed password and salt
         new_account = Account(
             status=status,
             authority=authority,
             username=username,
-            password=encrypted_password,
+            passwordHash=hashed_password,  # Store the hashed password
+            salt=salt,  # Store the generated salt
             dateCreated=db.func.current_timestamp()
         )
 
@@ -387,11 +439,20 @@ def update_account(id):
         # Update password if provided
         new_password = data.get('password')
         if new_password:
-            encrypted_password = session.execute(
-                text("SELECT CONVERT(VARBINARY(600), ENCRYPTBYPASSPHRASE('password', :password)) AS encrypted_pass"),
-                {"password": new_password}
+            # Generate a new salt
+            new_salt = session.execute(
+                text("SELECT CRYPT_GEN_RANDOM(32) AS salt")
             ).scalar()
-            account.password = encrypted_password
+
+            # Hash the new password with the new salt
+            hashed_password = session.execute(
+                text("SELECT HASHBYTES('SHA2_256', :password + CAST(:salt AS NVARCHAR(MAX))) AS hashed_password"),
+                {"password": new_password, "salt": new_salt}
+            ).scalar()
+
+            # Update the account's passwordHash and salt
+            account.passwordHash = hashed_password
+            account.salt = new_salt
 
         # Update authority if provided
         authority = data.get('authority')
@@ -406,8 +467,8 @@ def update_account(id):
         session.rollback()
         session.close()
         return jsonify({'error': str(e)}), 500
-    
 
+    
 @app.route('/change_account_status/<int:id>', methods=['PUT'])
 @jwt_required()
 def update_account_status(id):
@@ -683,23 +744,33 @@ def change_password():
         if not account:
             return jsonify({'error': 'Account not found'}), 404
 
-        # Encrypt the old password to verify it matches the stored encrypted password
-        encrypted_old_password = session.execute(
-            text("SELECT CONVERT(VARBINARY(600), ENCRYPTBYPASSPHRASE('password', :old_password)) AS encrypted_pass"),
-            {"old_password": old_password}
+        # Retrieve the stored salt and hash the old password for verification
+        stored_salt = account.salt
+        hashed_old_password = session.execute(
+            text("SELECT HASHBYTES('SHA2_256', :old_password + CAST(:salt AS NVARCHAR(MAX))) AS hashed_password"),
+            {"old_password": old_password, "salt": stored_salt}
         ).scalar()
 
-        if account.password != encrypted_old_password:
+        # Verify the hashed old password matches the stored passwordHash
+        if account.passwordHash != hashed_old_password:
             return jsonify({'error': 'Incorrect old password'}), 401
 
-        # Encrypt the new password before storing
-        encrypted_new_password = session.execute(
-            text("SELECT CONVERT(VARBINARY(600), ENCRYPTBYPASSPHRASE('password', :new_password)) AS encrypted_pass"),
-            {"new_password": new_password}
+        # Generate a new salt for the new password
+        new_salt = session.execute(
+            text("SELECT CRYPT_GEN_RANDOM(32) AS salt")
         ).scalar()
 
-        # Update the password directly
-        account.password = encrypted_new_password
+        # Hash the new password with the new salt
+        hashed_new_password = session.execute(
+            text("SELECT HASHBYTES('SHA2_256', :new_password + CAST(:salt AS NVARCHAR(MAX))) AS hashed_password"),
+            {"new_password": new_password, "salt": new_salt}
+        ).scalar()
+
+        # Update the account's passwordHash and salt with the new values
+        account.passwordHash = hashed_new_password
+        account.salt = new_salt
+
+        # Commit the changes to the database
         session.commit()
         session.close()
 
@@ -765,32 +836,6 @@ def get_user_details():
         return jsonify({'error': f'Failed to fetch user details: {str(e)}'}), 500
     
 
-@app.route('/get_user_password', methods=['GET'])
-@jwt_required()
-def get_user_password():
-    session = db.session()
-    try:
-        # Get the user ID from the token
-        user_id = get_jwt_identity()
-
-        # Fetch the encrypted password from the Account table
-        result = session.query(Account.password).join(User, User.accountID == Account.ID).filter(User.ID == user_id).first()
-
-        # If no password is found, return an error response
-        if not result:
-            return jsonify({'error': 'User not found or password not available'}), 404
-
-        return jsonify({'password': result[0]}), 200
-
-    except Exception as e:
-        # Handle errors, rollback session, and log the exception
-        session.rollback()
-        return jsonify({'error': f'Failed to fetch password: {str(e)}'}), 500
-
-    finally:
-        session.close()
-
-
 @app.route('/get_history', methods=['GET'])
 @jwt_required()
 def get_history():
@@ -802,17 +847,19 @@ def get_history():
 
         # Execute the query to get delivery orders with their associated goods received orders
         results = session.query(
-            DeliveryOrder.DOID,
+            DeliveryOrder.ID.label('DOID'),
             DeliveryOrder.documentName.label('DO_document_Name'),
-            func.coalesce(GoodsReceivedOrder.GRID, '-').label('GRID'),
+            func.coalesce(GoodsReceivedOrder.ID, '-').label('GRID'),
             func.coalesce(GoodsReceivedOrder.documentName, '-').label('GR_document_Name'),
-            GoodsReceivedOrder.dateConverted,
-            func.coalesce(ConvertStatus.desc, 'Failed').label('status'),
+            GoodsReceivedOrder.dateConverted.label('dateConverted'),
+            func.coalesce(ConvertStatus.desc, '-').label('status'),
             DeliveryOrder.dateCreated.label('Uploaded_Date')
-        ).outerjoin(GoodsReceivedOrder, 
-                    (GoodsReceivedOrder.deliverOrderId == DeliveryOrder.ID) & 
-                    (GoodsReceivedOrder.createdBy == user_id)
-        ).outerjoin(ConvertStatus, ConvertStatus.ID == DeliveryOrder.convertStatusId
+        ).outerjoin(
+            GoodsReceivedOrder, 
+            (GoodsReceivedOrder.deliverOrderId == DeliveryOrder.ID) & 
+            (GoodsReceivedOrder.createdBy == user_id)  
+        ).outerjoin(
+            ConvertStatus, ConvertStatus.ID == DeliveryOrder.convertStatusId
         ).filter(DeliveryOrder.uploadBy == user_id).all()
 
         # Format the results as a list of dictionaries
@@ -856,9 +903,6 @@ def upload_delivery_order():
         if not request.files:
             return jsonify({'error': 'No files uploaded'}), 400
 
-        # Retrieve DOID from form data, default to None if not provided
-        doid = request.form.get('DOID') or None
-
         # Loop over the uploaded files and add each one to the database
         for key in request.files:
             file = request.files[key]
@@ -867,11 +911,9 @@ def upload_delivery_order():
             # Insert into the DeliveryOrder table
             delivery_order = DeliveryOrder(
                 uploadBy=user_id,
-                convertStatusId=1,
-                DOID=doid,  # Set DOID to None if not provided
+                convertStatusId=3, #New status
                 DOfile=file_data,
-                documentName=file.filename,
-                dateCreated=datetime.utcnow()
+                documentName=file.filename
             )
             session.add(delivery_order)
 
@@ -886,9 +928,128 @@ def upload_delivery_order():
     finally:
         session.close()
 
-
-
+@app.route('/upload_goods_received_order', methods=['POST'])
+@jwt_required()
+def upload_goods_received_order():
+    userID = get_jwt_identity()
+    # Check if a file is provided in the request
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file provided'}), 400
     
+    file = request.files['file']
+    
+    # Get required form fields
+    deliver_order_id = request.form.get('deliverOrderId')
+    created_by = userID
+    template_file_id = request.form.get('templateFileId')
+    document_name = request.form.get('documentName')
+    
+    if not deliver_order_id or not created_by or not template_file_id or not document_name:
+        return jsonify({'error': 'Missing required parameters'}), 400
+
+    # Check if file is valid
+    if not document_name.endswith(('xlsx')):
+        return jsonify({'error': 'Invalid file type. Only XLSX files are allowed.'}), 400
+
+    try:
+        session_db = db.session()
+
+        # Convert the file to VARBINARY
+        grfile = file.read()
+
+        # Create a new GoodsReceivedOrder instance
+        gr_order = GoodsReceivedOrder(
+            deliverOrderId=deliver_order_id,
+            createdBy=created_by,
+            GRfile=grfile,
+            documentName=document_name,
+            templateFile=template_file_id
+        )
+
+        # Add and commit to the database
+        session_db.add(gr_order)
+        session_db.commit()
+
+        return jsonify({'message': 'GoodsReceivedOrder uploaded successfully', 'grOrderId': gr_order.ID}), 200
+
+    except Exception as e:
+        session_db.rollback()  # Rollback any changes if there's an error
+        return jsonify({'error': f'Failed to upload GoodsReceivedOrder: {str(e)}'}), 500
+
+    finally:
+        session_db.close()
+
+
+@app.route('/update_convert_status', methods=['POST'])
+def update_convert_status_endpoint():
+    try:
+        # Get convert_status and do_id from the request JSON
+        data = request.get_json()
+        convert_status = data.get('convert_status')
+        do_id = data.get('do_id')
+
+        # Ensure both parameters are provided
+        if not convert_status or not do_id:
+            return jsonify({'error': 'Both convert_status and do_id are required'}), 400
+        
+        # Call the update function
+        result = update_convert_status(convert_status, do_id)
+        return jsonify({'message': result}), 200
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+# Endpoint to get the latest Delivery Order ID
+@app.route('/get_latest_doid', methods=['GET'])
+def get_latest_doid_endpoint():
+    try:
+        # Call the function to get the latest DOID
+        latest_doid = get_latest_doid()
+        
+        if latest_doid is None:
+            return jsonify({'error': 'No Delivery Orders found'}), 404
+        
+        return jsonify({'latest_doid': latest_doid}), 200
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+def update_convert_status(convert_status: int, do_id: int) -> str:
+    session_db = DBSession(db.engine)
+
+    try:
+        # Fetch the delivery order record
+        delivery_order = session_db.query(DeliveryOrder).filter_by(ID=do_id).first()
+
+        if not delivery_order:
+            raise ValueError(f"No DeliveryOrder found with ID {do_id}")
+
+        # Update the convert status
+        delivery_order.convertStatusId = convert_status 
+        session_db.commit()
+
+        return f"Convert status updated to {convert_status} for DeliveryOrder ID {do_id}"
+
+    except Exception as e:
+        session_db.rollback()  # Rollback any changes if there's an error
+        raise RuntimeError(f"Failed to update convert status: {str(e)}")
+
+    finally:
+        session_db.close()
+
+
+def get_latest_doid():
+    session = db.session()
+    try:
+        latest_doid = session.query(DeliveryOrder.ID).order_by(DeliveryOrder.ID.desc()).first()
+        if latest_doid:
+            return latest_doid[0]
+        return None
+    except Exception as e:
+        raise Exception(f"Error retrieving the latest DOID: {str(e)}")
+    finally:
+        session.close()
+
 
 custom_config = r'--psm 6 -c tessedit_char_whitelist="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.,:-()&/"'
 # Create output directory for debugging images
@@ -901,105 +1062,261 @@ def save_image(image, filename):
     cv2.imwrite(filepath, image)
     print(f"Image saved at {filepath}")
 
+#zoom extract scroll algorithm (passed)
+#Step 3: Using Z.E.S algorithm to process the image for later use
 def zoom_extract_scroll(image, page_num, scroll_height=500):
+    do_id = get_latest_doid()
     text = ""
     img_height = image.shape[0]
     current_y = 0
     segment_num = 1
 
     while current_y < img_height:
-        # Define the current segment as a "viewport"
-        segment = image[current_y:current_y + scroll_height, :]
-        
-        # Zoom in (resize) the segment to enhance OCR accuracy
-        scale_factor = 2  # Change this if needed for better clarity
-        zoomed_segment = cv2.resize(segment, None, fx=scale_factor, fy=scale_factor, interpolation=cv2.INTER_LINEAR)
-        
-        # Save the zoomed segment image for debugging
-        save_image(zoomed_segment, f"page_{page_num}_segment_{segment_num}_zoomed.png")
-        
-        # Extract text from the zoomed segment using Tesseract
-        ocr_text = pytesseract.image_to_string(zoomed_segment, config=custom_config)
-        text += ocr_text + "\n\n"
+        try:
+            segment = image[current_y:current_y + scroll_height, :]
+            scale_factor = 2
+            zoomed_segment = cv2.resize(segment, None, fx=scale_factor, fy=scale_factor, interpolation=cv2.INTER_LINEAR)
+            save_image(zoomed_segment, f"page_{page_num}_segment_{segment_num}_zoomed.png")
+            ocr_text = pytesseract.image_to_string(zoomed_segment, config=custom_config)
+            print(f"OCR Text for Page {page_num}, Segment {segment_num}: {ocr_text}")
+            text += ocr_text + "\n\n"
+        except Exception as e:
+            update_convert_status(2, int(do_id)) #Failed status
+            print(f"Error processing segment {segment_num} of page {page_num}: {e}")
 
-        # Move to the next "scroll" position
         current_y += scroll_height
         segment_num += 1
 
     return text
 
+#Step 4: NLP to recognize price and description (spaCy)
+# def extract_description_and_price(text):
+#     descriptions = []
+#     prices = []
 
-price_keywords = ["Unit Price", "Unit"]
+#     # Define table-like patterns for rows
+#     table_row_pattern = r"^\d+.*?[A-Za-z].*?[\d,.]+$"  # Row with index, description, and price
+#     price_pattern = r"\b\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?\b"  # General price pattern
+
+#     # Define exclusion patterns for irrelevant blocks
+#     exclusion_patterns = [
+#         r"^\s*$",  # Empty lines
+#         r"(Phone|Address|Tax|Bank|Line No|RINGGITMALAYSIA|PaymentTerms)",  # Irrelevant blocks
+#     ]
+
+#     # Split text into lines
+#     lines = text.splitlines()
+
+#     for line in lines:
+#         line = line.strip()
+
+#         # Skip lines matching exclusion patterns
+#         if any(re.search(pattern, line) for pattern in exclusion_patterns):
+#             continue
+
+#         # Process table-like rows
+#         if re.match(table_row_pattern, line):
+#             # Split the row into components (item code, description, qty, price)
+#             parts = re.split(r'\s{2,}|\t|UNIT|RM', line)  # Split on spaces, tabs, or units
+#             parts = [p.strip() for p in parts if p.strip()]  # Clean empty parts
+
+#             if len(parts) >= 2:  # Ensure row has at least a description and price
+#                 descriptions.append(parts[0])  # Add the description (first meaningful part)
+
+#             # Extract price from the line
+#             price_match = re.search(price_pattern, line)
+#             if price_match:
+#                 prices.append(price_match.group(0))
+
+#     # Deduplicate results and return structured data
+#     return {
+#         "Description": list(set(descriptions)),  # Remove duplicates
+#         "Unit Price": list(set(prices))          # Remove duplicates
+#     }
+
+#Step 4: NLP to recognize price and description with google gemini
 def extract_description_and_price(text):
-    descriptions = []
-    prices = []
+    do_id = get_latest_doid()
+    # Initialize Vertex AI with your project and region
+    vertexai.init(project="file-conversion-do-to-gr", location="us-central1")
+    
+    # Load the Generative Model
+    model = GenerativeModel("gemini-1.5-flash-002")
 
-    # Process text with spaCy
-    doc = nlp(text)
+    # Prepare the input text for content generation
+    input_text = [f"""
+    Extract and organize the descriptions and prices from the following text which is generated from OCR. 
+    Format the result as a JSON object with "Description", "Qty", and "Unit Price". 
+    Include only meaningful product descriptions, their respective prices, and quantity as well.
 
-    # Extract potential descriptions based on noun phrases
-    for np in doc.noun_chunks:
-        if len(np.text) > 3:  # Filter out short phrases
-            descriptions.append(np.text.strip())
+    Text:
+    {text}
 
-    # Extract prices based on patterns with keywords or standalone numbers
-    for line in text.splitlines():
-        for keyword in price_keywords:
-            match = re.search(rf"{keyword}\s*[:$]?\s*([\d,.]+)", line, re.IGNORECASE)
-            if match:
-                prices.append(match.group(1).replace(",", ""))  # Clean and add price
-        # Also look for standalone numbers that could be unit prices
-        price_match = re.search(r"\b\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?\b", line)
-        if price_match and not any(keyword in line for keyword in price_keywords):
-            prices.append(price_match.group(0))
+    Example response:
+    {{
+        "Description": [
+            "Console Cable USB Type-C to RJ45 (Length 2M)",
+            "Power cord (Lagavulin)"
+        ],
+        "Qty": [
+            "6",
+            "8"
+        ],
+        "Unit Price": [
+            "RM 53.66",
+            "RM 29.09"
+        ]
+    }}
+    """]
 
-    return {
-        "Description": descriptions,
-        "Unit Price": prices
+    # Generation configuration
+    generation_config = {
+        "max_output_tokens": 256,
+        "temperature": 0.7,
+        "top_p": 0.9,
     }
 
+    # Safety settings
+    safety_settings = [
+        SafetySetting(
+            category=SafetySetting.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+            threshold=SafetySetting.HarmBlockThreshold.OFF,
+        ),
+        SafetySetting(
+            category=SafetySetting.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+            threshold=SafetySetting.HarmBlockThreshold.OFF,
+        ),
+        SafetySetting(
+            category=SafetySetting.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+            threshold=SafetySetting.HarmBlockThreshold.OFF,
+        ),
+        SafetySetting(
+            category=SafetySetting.HarmCategory.HARM_CATEGORY_HARASSMENT,
+            threshold=SafetySetting.HarmBlockThreshold.OFF,
+        ),
+    ]
 
+    try:
+        # Generate response using the model
+        responses = model.generate_content(
+            input_text,
+            generation_config=generation_config,
+            safety_settings=safety_settings,
+            stream=True,
+        )
+
+        print("Raw API Responses:")
+        complete_response = []
+        for response in responses:
+            print(response.text)  # Debug raw response
+            complete_response.append(response.text.strip())
+
+        # Combine responses and clean formatting
+        clean_response = " ".join(complete_response).strip("```").strip()
+        if clean_response.startswith("json"):
+            clean_response = clean_response[4:].strip()
+
+        # Debug cleaned response
+        print("Cleaned Raw Response:", clean_response)
+
+        # Parse JSON response
+        try:
+            parsed_response = json.loads(clean_response)
+            print("Parsed JSON:", parsed_response)  # Debug parsed output
+            return parsed_response
+        except json.JSONDecodeError as e:
+            update_convert_status(2, int(do_id)) #Failed status
+            print(f"JSON decoding error: {e}")
+            print(f"Cleaned Raw Response: {clean_response}")
+            return {"Description": [], "Unit Price": []}
+
+    except Exception as e:
+        update_convert_status(2, int(do_id)) #Failed status
+        print(f"Error using Google Gemini API: {e}")
+        return {
+            "Description": [],
+            "Unit Price": [],
+            "Qty": []
+        }
+
+#Step 2: Converting PDF to image
 def extract_text_from_pdf(file):
-    structured_data = {'description': [], 'unit_price': []}  # To store extracted values
-    with pdfplumber.open(file) as pdf:
-        for page_num, page in enumerate(pdf.pages):
-            page_image = page.to_image(resolution=300)
-            pil_image = page_image.original
-            open_cv_image = np.array(pil_image)[:, :, ::-1].copy()
+    structured_data = {'description': [], 'unit_price': [], 'qty': []}
+    all_text = ""  # To store the full extracted text
 
-            # Use the "zoom-extract-scroll" function, and get OCR output
-            page_text = zoom_extract_scroll(open_cv_image, page_num + 1)
-            
-            # Use spaCy and regex-enhanced function to extract descriptions and prices
+    pdf_document = fitz.open(stream=file.read(), filetype="pdf") 
+    do_id = get_latest_doid()
+        
+    for page_num in range(len(pdf_document)):
+        try:
+            # Get the current page
+            page = pdf_document[page_num]
+
+            # Render the page as an image (pixmap)
+            pix = page.get_pixmap(dpi=300)  # Adjust DPI for better quality
+            img_array = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)  # Convert to OpenCV-compatible format
+
+            # If the image is in grayscale, reshape it accordingly
+            if pix.n == 1:  # Grayscale
+                img_array = cv2.cvtColor(img_array, cv2.COLOR_GRAY2BGR)
+
+            # Use the "zoom-extract-scroll" function to process the image
+            page_text = zoom_extract_scroll(img_array, page_num + 1)
+            all_text += page_text  # Append to the full text output
+
+            # Extract structured data (descriptions and unit prices) using NLP and regex
             extracted_data = extract_description_and_price(page_text)
-            structured_data['description'].extend(extracted_data['Description'])
-            structured_data['unit_price'].extend(extracted_data['Unit Price'])
 
-    return structured_data
+            # Validate and append extracted data
+            if isinstance(extracted_data, dict) and "Description" in extracted_data and "Unit Price" in extracted_data:
+                structured_data['description'].extend(
+                    [desc.strip() for desc in extracted_data['Description'] if isinstance(desc, str)]
+                )
+                structured_data['unit_price'].extend(
+                    [price.strip() for price in extracted_data['Unit Price'] if isinstance(price, str)]
+                )
+                structured_data['unit_price'].extend(
+                    [price.strip() for price in extracted_data.get('Unit Price', []) if isinstance(price, str)]
+                )
+            else:
+                print(f"Invalid data returned for page {page_num + 1}: {extracted_data}")
+
+        except Exception as e:
+            update_convert_status(2, int(do_id))
+            print(f"Error processing page {page_num + 1}: {e}")
+
+    pdf_document.close()
+    return all_text, structured_data
 
 
+#Step 1: calling this endpoint
 @app.route('/extract_text', methods=['POST'])
 def extract_text():
     if 'file' not in request.files:
         return jsonify({'error': 'No file provided'}), 400
 
     file = request.files['file']
-    if file and file.filename.endswith('.pdf'):
-        try:
-            # Extract text and structured data from the PDF
-            extracted_text, extracted_data = extract_text_from_pdf(file)
-            
-            # Return both the full text and the structured data for mapping
-            return jsonify({
-                'extracted_text': extracted_text,
-                'structured_data': extracted_data
-            }), 200
-        except Exception as e:
-            return jsonify({'error': f'Failed to extract text: {str(e)}'}), 500
-    else:
+    if not file or not file.filename.endswith('.pdf'):
         return jsonify({'error': 'Invalid file type. Only PDF files are allowed.'}), 400
 
- 
+    do_id = get_latest_doid()
+    
+    try:
+        # Extract text and structured data from the PDF
+        extracted_text, structured_data = extract_text_from_pdf(file)
+
+        # Return both the full text and the structured data for mapping
+        return jsonify({
+            'extracted_text': extracted_text,
+            'structured_data': structured_data
+        }), 200
+    except Exception as e:  
+        update_convert_status(2, int(do_id)) #Failed status
+        return jsonify({'error': f'Failed to extract text: {str(e)}'}), 500
+    
+
+
+ #Step 5: mapping to template
 @app.route('/map_to_template', methods=['POST'])
 @jwt_required()
 def map_to_template():
@@ -1007,76 +1324,100 @@ def map_to_template():
         data = request.get_json()
         template_id = data.get('template_id')
         structured_data = data.get('structured_data')
+        # #Dummy Data
+        # structured_data = {
+        #     "description": [
+        #         "Console Cable USB Type-C to RJ45 (Length 2M)",
+        #         "Power Cord (Lagavulin)"
+        #     ],
+        #     "qty": ["6", "8"],
+        #     "unit_price": ["RM 53.66", "RM 29.09"]
+        # }
+
+        do_id = get_latest_doid()
 
         if not template_id or not structured_data:
+            update_convert_status(2, int(do_id)) #Failed status
             return jsonify({'error': 'Template ID and structured data are required'}), 400
 
         # Fetch template from the database
         template = db.session.query(GRTemplate).filter_by(ID=template_id).first()
         if not template or not template.templateFile:
+            update_convert_status(2, int(do_id)) #Failed status
             return jsonify({'error': 'Template not found or file missing'}), 404
 
-        # Load the DOCX template from binary data
-        docx_file = BytesIO(template.templateFile)
-        document = Document(docx_file)
+       # Load the XLSX template from binary data
+        xlsx_file = BytesIO(template.templateFile)
+        workbook = load_workbook(xlsx_file)
+        worksheet = workbook.active
 
         # Replace placeholders for descriptions and unit prices
         descriptions = structured_data.get('description', [])
         unit_prices = structured_data.get('unit_price', [])
+        quantities = structured_data.get('qty', [])
+    
+        for i, (desc, qty, price) in enumerate(zip(descriptions, quantities, unit_prices), start=17):
+            # Calculate the row range (e.g., row 17–24)
+            description_range = f"G{i}:M{i}"  # Description spans columns G to M
+            qty_range = f"N{i}:O{i}"         # Quantity spans columns N to O
+            price_range = f"P{i}:R{i}"       # Unit Price spans columns P to R
 
-        # Determine the maximum number of placeholders for dynamic fields
-        max_placeholders = max(len(descriptions), len(unit_prices))
+            # Write data into the top-left cells of each range
+            worksheet[f"G{i}"] = desc  # Description
+            worksheet[f"N{i}"] = qty   # Quantity
+            worksheet[f"P{i}"] = price  # Unit Price
 
-        # Replace description placeholders (or with empty string if no data available)
-        for i in range(1, max_placeholders + 1):
-            description_placeholder = f"{{{{Description {i}}}}}"
-            unit_price_placeholder = f"{{{{Unit Price {i}}}}}"
+            # Merge the cells for each range
+            worksheet.merge_cells(description_range)  # Merge cells for Description
+            worksheet.merge_cells(qty_range)         # Merge cells for Quantity
+            worksheet.merge_cells(price_range)       # Merge cells for Unit Price
 
-            description_value = descriptions[i - 1] if i - 1 < len(descriptions) else ""
-            unit_price_value = unit_prices[i - 1] if i - 1 < len(unit_prices) else ""
+        with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp_xlsx_file:
+            tmp_xlsx_filename = tmp_xlsx_file.name
+            workbook.save(tmp_xlsx_filename)
 
-            # Replace placeholders in the document
-            replace_placeholder_in_document(document, description_placeholder, description_value)
-            replace_placeholder_in_document(document, unit_price_placeholder, unit_price_value)
-
-        # Save the modified DOCX to a temporary file
-        with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp_docx_file:
-            tmp_docx_filename = tmp_docx_file.name
-            document.save(tmp_docx_filename)
-
-        # Read the generated DOCX and send it as a response
-        with open(tmp_docx_filename, "rb") as docx_file:
-            docx_data = BytesIO(docx_file.read())
-        os.remove(tmp_docx_filename)
+        with open(tmp_xlsx_filename, "rb") as xlsx_file:
+            xlsx_data = BytesIO(xlsx_file.read())
+        os.remove(tmp_xlsx_filename)
 
         return send_file(
-            docx_data,
+            xlsx_data,
             as_attachment=True,
-            download_name="generated_document.docx",
-            mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+            download_name="generated_document.xlsx",
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
         )
-
     except Exception as e:
+        update_convert_status(2, int(do_id)) #Failed status
         return jsonify({'error': f'Failed to map and generate template: {str(e)}'}), 500
 
 
-def replace_placeholder_in_document(document, placeholder, value):
-    """Helper function to replace placeholder in document paragraphs and tables."""
-    # Replace placeholder in paragraphs
-    for paragraph in document.paragraphs:
-        if placeholder in paragraph.text:
-            paragraph.text = paragraph.text.replace(placeholder, value)
+#For words template
+# #Step 5.2: Replacing placeholder
+# def replace_placeholder_in_document(document, placeholder, value):
+#     """
+#     Replace placeholders in the document with the given value or remove them if the value is empty.
+#     """
+#     try:
+#         for paragraph in document.paragraphs:
+#             if placeholder in paragraph.text:
+#                 if value:
+#                     paragraph.text = paragraph.text.replace(placeholder, value)
+#                 else:
+#                     paragraph.text = paragraph.text.replace(placeholder, "")  
 
-    # Replace placeholder in table cells
-    for table in document.tables:
-        for row in table.rows:
-            for cell in row.cells:
-                if placeholder in cell.text:
-                    cell.text = cell.text.replace(placeholder, value)
+#         for table in document.tables:
+#             for row in table.rows:
+#                 for cell in row.cells:
+#                     if placeholder in cell.text:
+#                         if value:
+#                             cell.text = cell.text.replace(placeholder, value)
+#                         else:
+#                             cell.text = cell.text.replace(placeholder, "") 
+#     except Exception as e:
+#         print(f"Error replacing placeholder {placeholder}: {e}")
+
 
     
-
-
 @app.route('/upload_gr_template', methods=['POST'])
 @jwt_required()
 def upload_gr_template():
@@ -1096,6 +1437,8 @@ def upload_gr_template():
             return jsonify({'error': 'No selected file'}), 400
         if not description:
             return jsonify({'error': 'Description is required'}), 400
+        if not (file.filename.endswith('.xls') or file.filename.endswith('.xlsx')):
+            return jsonify({'error': 'Only XLS and XLSX files are allowed'}), 400
 
         # Secure the file name and read file data as binary
         filename = secure_filename(file.filename)

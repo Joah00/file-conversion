@@ -2,12 +2,15 @@ import React, { useState, useEffect } from "react";
 import MainLayout from "../Layout/MainLayout";
 import "./ConvertPage.css";
 import CloseIcon from "@mui/icons-material/Close";
-import { Button, Autocomplete, TextField } from "@mui/material";
+import { Button, Autocomplete, TextField, Typography, CircularProgress, Box } from "@mui/material";
 
 function ConvertPage() {
   const [uploadedFiles, setUploadedFiles] = useState([]);
   const [templates, setTemplates] = useState([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState(null);
+  const [isLoading, setIsLoading] = useState(false);  
+  const [progress, setProgress] = useState(0);   
+  const [isDone, setIsDone] = useState(false);
 
   const handleDrop = (e) => {
     e.preventDefault();
@@ -116,120 +119,135 @@ function ConvertPage() {
     window.open(fileURL, "_blank");
   };
 
-  const handleMappingToTemplate = async (structuredData) => {
-    try {
-      const response = await fetch("http://127.0.0.1:5000/map_to_template", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: "Bearer " + localStorage.getItem("access_token"),
-        },
-        body: JSON.stringify({
-          template_id: selectedTemplateId,
-          structured_data: structuredData,
-        }),
-      });
-
-      const data = await response.json();
-      if (response.ok) {
-        alert(data.message || "Template mapping completed successfully!");
-        window.open(
-          `http://127.0.0.1:5000/download/${data.document_filename}`,
-          "_blank"
-        );
-      } else {
-        alert(data.error || "Failed to map data to template.");
-      }
-    } catch (error) {
-      console.error("Error mapping to template:", error);
-      alert("Failed to map data to template.");
-    }
+  const clearAll = () => {
+    setUploadedFiles([]);  
+    setIsDone(false);      
+    setIsLoading(false);   
   };
 
   const handleUpload = async () => {
-    // Check if there are uploaded files
     if (uploadedFiles.length === 0) {
       alert("Please select a PDF file before uploading.");
       return;
     }
+  
+    setIsLoading(true);
+    setIsDone(false);
+  
+    for (const file of uploadedFiles) {
+      try {
+        const formData = new FormData();
+        formData.append("file", file);
 
-    const file = uploadedFiles[0]; // Access the first file directly from uploadedFiles
-    if (!file.name.endsWith(".pdf")) {
-      alert("Please upload a PDF file.");
-      return;
-    }
+        const uploadResponse = await fetch("http://127.0.0.1:5000/upload_delivery_order", {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer " + localStorage.getItem("access_token"),
+          },
+          body: formData, 
+        });
+      
+        if (!uploadResponse.ok) {
+          const uploadError = await uploadResponse.json();
+          throw new Error(uploadError.error || "Failed to upload delivery order");
+        }
 
-    try {
-      // Prepare form data for the PDF file upload
-      const formData = new FormData();
-      formData.append("file", file);
+        const latestDoResponse = await fetch("http://127.0.0.1:5000/get_latest_doid", {
+          method: "GET",
+          headers: {
+            Authorization: "Bearer " + localStorage.getItem("access_token"),
+          },
+        });
 
-      // Send the PDF to the /extract_text endpoint
-      const response = await fetch("http://127.0.0.1:5000/extract_text", {
-        method: "POST",
-        headers: {
-          Authorization: "Bearer " + localStorage.getItem("access_token"),
-        },
-        body: formData,
-      });
+        if (!latestDoResponse.ok) {
+          const latestDoError = await latestDoResponse.json();
+          throw new Error(latestDoError.error || "Failed to retrieve the latest DO ID");
+        }
 
-      if (!response.ok) {
-        const errorData = await response.json();
-        alert(errorData.error || "Failed to extract text from PDF.");
-        return;
-      }
-
-      // Destructure extracted text and structured data from the response
-      const { extracted_text, structured_data } = await response.json();
-      console.log("Extracted Text:", extracted_text);
-      console.log("Structured Data:", structured_data);
-
-      // Optional: Verify structured_data contents
-      if (
-        !structured_data ||
-        !structured_data.description ||
-        !structured_data.unit_price
-      ) {
-        alert("Extracted data is incomplete or not in the expected format.");
-        return;
-      }
-
-      // Map to template
-      const mappingResponse = await fetch(
-        "http://127.0.0.1:5000/map_to_template",
-        {
+        const { latest_doid } = await latestDoResponse.json();
+        
+        if (!latest_doid) {
+          throw new Error("No valid DO ID returned.");
+        }
+        
+        const response = await fetch("http://127.0.0.1:5000/extract_text", {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer " + localStorage.getItem("access_token"),
+          },
+          body: formData,
+        });
+  
+        if (!response.ok) {
+          const errorData = await response.json();
+          throw new Error(errorData.error || "Upload failed");
+        }
+  
+        const { structured_data } = await response.json();
+  
+        // Map to template
+        const mappingResponse = await fetch("http://127.0.0.1:5000/map_to_template", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
             Authorization: "Bearer " + localStorage.getItem("access_token"),
           },
-          body: JSON.stringify({
-            template_id: selectedTemplateId,
-            structured_data: structured_data,
-          }),
+          body: JSON.stringify({ template_id: selectedTemplateId, structured_data }),
+        });
+  
+        if (!mappingResponse.ok) {
+          const errorData = await mappingResponse.json();
+          throw new Error(errorData.error || "Mapping failed");
         }
-      );
+  
+        const xlsxBlob = await mappingResponse.blob();
+        const link = document.createElement("a");
+        link.href = URL.createObjectURL(xlsxBlob);
+        link.download = `converted_GR_${file.name.replace('.pdf', '.xlsx')}`;
+        link.click();
 
-      if (!mappingResponse.ok) {
-        const errorData = await mappingResponse.json();
-        alert(errorData.error || "Failed to map data to template.");
+        const updateStatusResponse = await fetch("http://127.0.0.1:5000/update_convert_status", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: "Bearer " + localStorage.getItem("access_token"),
+          },
+          body: JSON.stringify({ convert_status: 1, do_id: latest_doid }),
+        });
+        if (!updateStatusResponse.ok) {
+          const updateStatusError = await updateStatusResponse.json();
+          throw new Error(updateStatusError.error || "Failed to update convert status");
+        } 
+
+        const grOrderFormData = new FormData();
+        grOrderFormData.append("file", xlsxBlob);
+        grOrderFormData.append("deliverOrderId", latest_doid);
+        grOrderFormData.append("templateFileId", selectedTemplateId); 
+        grOrderFormData.append("documentName", `GR_${file.name.replace('.pdf', '.xlsx')}`);
+
+        const grUploadResponse = await fetch("http://127.0.0.1:5000/upload_goods_received_order", {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer " + localStorage.getItem("access_token"),
+          },
+          body: grOrderFormData,
+        });
+
+        if (!grUploadResponse.ok) {
+          const grError = await grUploadResponse.json();
+          throw new Error(grError.error || "Failed to upload Goods Received Order");
+        }
+        setIsDone(true);
+      } catch (error) {
+        console.error("Error during processing:", error);
+        alert(error.message);
+        setIsLoading(false);
         return;
       }
-
-      // Handle the DOCX response
-      const docxBlob = await mappingResponse.blob();
-      const docxUrl = URL.createObjectURL(docxBlob);
-      const link = document.createElement("a");
-      link.href = docxUrl;
-      link.download = "generated_document.docx";
-      link.click();
-
-      alert("Mapping completed and document generated successfully!");
-    } catch (error) {
-      console.error("Error during file processing:", error);
-      alert("Failed to complete the upload and mapping process.");
     }
+    setIsLoading(false); 
   };
+  
 
   return (
     <MainLayout>
@@ -293,8 +311,46 @@ function ConvertPage() {
                 if (newValue) setSelectedTemplateId(newValue.ID);
               }}
             />
+            <Button variant="contained" color="primary" onClick={handleUpload}>
+              Convert
+            </Button>
+            <Button variant="contained" color="primary" onClick={clearAll}
+            style={{ marginLeft: "10px", backgroundColor: "red" }}>
+              Clear All
+            </Button>
+            <br/> <br/>
+            
             <div className="file-list-container">
+              {isLoading ? (
+                  <Box sx={{ display: "flex", marginLeft: "" }}>
+                    <CircularProgress color="inherit" />
+                    <Typography
+                      variant="caption"
+                      sx={{
+                        color: "white",
+                        fontSize: "15px",
+                        marginLeft: "10px",
+                        margintBottom: "10px"
+                      }}
+                    >
+                      Converting
+                    </Typography>
+                    <br/>
+                  </Box>
+                ) : isDone ? (
+                  <Typography
+                    variant="caption"
+                    sx={{
+                      color: "#8BC34A",
+                      fontSize: "15px",
+                    }}
+                  >
+                    Below DO(s) has converted to GR(s)!
+                  </Typography>
+                ) : null}
+
               <ul className="file-list">
+                <br/>
                 {uploadedFiles.map((file, index) => (
                   <li key={index} className="file-item">
                     {file.name}
@@ -320,9 +376,6 @@ function ConvertPage() {
                 ))}
               </ul>
             </div>
-            <Button variant="contained" color="primary" onClick={handleUpload}>
-              Convert
-            </Button>
           </div>
         )}
       </div>

@@ -1,16 +1,7 @@
 import React, { useState, useEffect } from "react";
 import MainLayout from "../Layout/MainLayout";
 import "./GoodsReceivedDatabasePage.css";
-import Paper from "@mui/material/Paper";
-import Table from "@mui/material/Table";
-import TableBody from "@mui/material/TableBody";
-import TableCell from "@mui/material/TableCell";
-import TableContainer from "@mui/material/TableContainer";
-import TableHead from "@mui/material/TableHead";
-import TableRow from "@mui/material/TableRow";
-import TablePagination from "@mui/material/TablePagination";
 import { TextField } from "@mui/material";
-import dayjs from "dayjs";
 import DOGRTableComponent from "../Components/DOGRTableComponent";
 
 function GoodsReceivedDatabasePage() {
@@ -24,7 +15,6 @@ function GoodsReceivedDatabasePage() {
   ];
 
   const [page, setPage] = useState(0);
-  const [rowsPerPage, setRowsPerPage] = useState(10);
   const [GRData, setGRData] = useState([]);
   const [originalData, setOriginalData] = useState([]);
   const [filterText, setFilterText] = useState("");
@@ -33,14 +23,6 @@ function GoodsReceivedDatabasePage() {
   const [filterDOID, setFilterDOID] = useState("");
   const [filterGRID, setFilterGRID] = useState("");
 
-  const handleChangePage = (event, newPage) => {
-    setPage(newPage);
-  };
-
-  const handleChangeRowsPerPage = (event) => {
-    setRowsPerPage(+event.target.value);
-    setPage(0);
-  };
 
   const handleFilterChange = (e) => {
     const newText = e.target.value;
@@ -121,9 +103,70 @@ function GoodsReceivedDatabasePage() {
     fetchGRData();
   }, []);
 
-  const handleRowClick = (row) => {
-    console.log("Row clicked", row);  
+  const handleRowClick = async (row) => {
+    console.log("Row clicked", row);
+  
+    // Fetch the GR file 
+    const fetchGRFile = async () => {
+      try {
+        const response = await fetch(
+          `http://127.0.0.1:5000/get_goods_received_order_file/${row.grid}`,
+          {
+            headers: {
+              Authorization: "Bearer " + localStorage.getItem("access_token"),
+              "Content-Type": "application/json",
+            },
+          }
+        );
+        if (!response.ok) throw new Error("Failed to fetch GR file");
+
+        const fileExtension = row.grDocumentName?.split(".").pop();
+        let mimeType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"; // Default to xlsx
+        
+        if (fileExtension === "xlsx") {
+          mimeType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"; // Excel file type
+        } else {
+          mimeType = "application/octet-stream"; // Fallback to binary stream for other types
+        }
+
+        const blob = await response.blob();
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = row.grDocumentName || "goods_received_order.xlsx";
+        link.click();  
+      } catch (error) {
+        console.error("Error fetching GR file:", error);
+        alert("Failed to fetch the GR file.");
+      }
+    };
+  
+    // Fetch the DO file 
+    const fetchDOFile = async () => {
+      try {
+        const response = await fetch(
+          `http://127.0.0.1:5000/get_delivery_order_file/${row.doid}`,
+          {
+            headers: {
+              Authorization: "Bearer " + localStorage.getItem("access_token"),
+              "Content-Type": "application/json",
+            },
+          }
+        );
+        if (!response.ok) throw new Error("Failed to fetch DO file");
+        const blob = await response.blob();
+        const fileURL = URL.createObjectURL(blob);
+        window.open(fileURL, "_blank");  // Open DO file in a new tab
+      } catch (error) {
+        console.error("Error fetching DO file:", error);
+        alert("Failed to fetch the DO file.");
+      }
+    };
+  
+    // Fetch both GR and DO files
+    await fetchGRFile();
+    await fetchDOFile();
   };
+  
 
   return (
     <MainLayout>

@@ -38,7 +38,7 @@ function HistoryPage() {
   };
 
   useEffect(() => {
-    fetchHistoryData(); // Fetch history data on component mount
+    fetchHistoryData(); 
   }, []);
 
   const filteredData = historyData.filter(

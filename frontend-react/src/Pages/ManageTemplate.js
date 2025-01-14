@@ -120,13 +120,12 @@ function ManageTemplate() {
     const file = e.dataTransfer.files[0];
     if (
       file &&
-      (file.type === "application/msword" ||
-        file.type ===
-          "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+      (file.type === "application/vnd.ms-excel" ||
+        file.type === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     ) {
       setUploadedFile(file);
     } else {
-      alert("Only DOC and DOCX files are allowed.");
+      alert("Only XLS and XLSX files are allowed.");
     }
   };
 
@@ -138,13 +137,12 @@ function ManageTemplate() {
     const file = e.target.files[0];
     if (
       file &&
-      (file.type === "application/msword" ||
-        file.type ===
-          "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+      (file.type === "application/vnd.ms-excel" ||
+        file.type === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     ) {
       setUploadedFile(file);
     } else {
-      alert("Only DOC and DOCX files are allowed.");
+      alert("Only XLS and XLSX files are allowed.");
     }
   };
 
@@ -234,7 +232,7 @@ function ManageTemplate() {
           onDrop={handleDrop}
           onDragOver={handleDragOver}
         >
-          <p>Drag and drop your DOC/DOCX file here</p>
+          <p>Drag and drop your XLS/XLSX file here</p>
           <p>or</p>
           <Button
             onClick={handleChooseFileClick}
@@ -253,7 +251,7 @@ function ManageTemplate() {
           type="file"
           id="file-input"
           style={{ display: "none" }}
-          accept=".doc, .docx"
+          accept=".xls, .xlsx"
           onChange={handleFileChange}
         />
 
